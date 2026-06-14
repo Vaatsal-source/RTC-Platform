@@ -5,10 +5,17 @@ import BackgroundParticles from './components/BackgroundParticles';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   Hash, MessageSquare, Terminal, Zap, Shield, ChevronRight, 
-  LogOut, LayoutDashboard, User 
+  LogOut, LayoutDashboard, User, ChevronDown, UserPlus, Settings, Plus, Lock 
 } from 'lucide-react';
 import { MessageFeed } from './components/MessageFeed';
-import { MessageProps } from './components/types';
+import { MessageProps, MemberProps } from './components/types';
+import { 
+  CreateWorkspaceModal, 
+  InviteMembersModal, 
+  WorkspaceSettingsModal,
+  CreateChannelModal,
+  ChannelSettingsModal
+} from './components/Modals';
 
 // Custom, legal-safe SVG Brand Icons
 const GithubIcon = () => (
@@ -34,8 +41,24 @@ export default function App() {
   const [showAuth, setShowAuth] = useState(false);
   const [viewOverride, setViewOverride] = useState(true); 
   const [showProfileMenu, setShowProfileMenu] = useState(false);
+  const [showWorkspaceDropdown, setShowWorkspaceDropdown] = useState(false);
   
-  // Seed message feed reactive data array
+  // Modal States
+  const [showCreateWorkspace, setShowCreateWorkspace] = useState(false);
+  const [showInviteModal, setShowInviteModal] = useState(false);
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [showCreateChannel, setShowCreateChannel] = useState(false);
+  const [showChannelSettings, setShowChannelSettings] = useState(false);
+  const [selectedChannelId, setSelectedChannelId] = useState<string | null>(null);
+
+  // Mock Data for UI Simulation
+  const userRole = 'admin'; 
+  const mockMembers: MemberProps[] = [
+    { id: '1', name: 'Vaatsalya', role: 'admin', status: 'online' },
+    { id: '2', name: 'John Dev', role: 'member', status: 'online' },
+    { id: '3', name: 'Sarah Archi', role: 'member', status: 'offline' },
+  ];
+
   const [messages, setMessages] = useState<MessageProps[]>([
     {
       id: '1',
@@ -49,9 +72,9 @@ export default function App() {
   const isViewingLanding = !isAuthenticated || viewOverride;
 
   const channels = [
-    { id: '1', name: 'general' },
-    { id: '2', name: 'engineering' },
-    { id: '3', name: 'random' },
+    { id: '1', name: 'general', isPrivate: false },
+    { id: '2', name: 'engineering', isPrivate: false },
+    { id: '3', name: 'private-ops', isPrivate: true },
   ];
 
   const handleLogout = () => {
@@ -245,38 +268,101 @@ export default function App() {
       
       {/* COLUMN 1: SERVER TRACK */}
       <nav className="w-[72px] flex flex-col items-center py-3 bg-[#1e1f22] gap-2 z-10 shrink-0">
-        <div className="flex h-12 w-12 cursor-pointer items-center justify-center rounded-2xl bg-gradient-to-tr from-indigo-600 to-purple-600 font-bold text-white transition-all hover:bg-indigo-500 hover:rounded-2xl shadow-md">
+        <div className="flex h-12 w-12 cursor-pointer items-center justify-center rounded-2xl bg-indigo-600 font-bold text-white transition-all hover:rounded-xl shadow-md">
           S1
         </div>
         <div className="h-[2px] w-8 bg-[#35373c] rounded-full my-1" />
-        <div className="flex h-12 w-12 cursor-pointer items-center justify-center rounded-3xl bg-[#313338] font-bold text-emerald-500 transition-all hover:bg-emerald-500 hover:text-white hover:rounded-2xl">
+        <button 
+          onClick={() => setShowCreateWorkspace(true)}
+          className="flex h-12 w-12 cursor-pointer items-center justify-center rounded-3xl bg-[#313338] font-bold text-emerald-500 transition-all hover:bg-emerald-500 hover:text-white hover:rounded-2xl"
+        >
           +
-        </div>
+        </button>
       </nav>
 
       {/* COLUMN 2: CHANNEL NAV PANEL */}
       <aside className="w-60 bg-[#2b2d31] flex flex-col shrink-0 relative z-10">
-        <div className="flex h-12 items-center justify-between border-b border-black/20 px-4 font-bold text-white shadow-sm">
+        <div 
+          className="flex h-12 items-center justify-between border-b border-black/20 px-4 font-bold text-white shadow-sm cursor-pointer hover:bg-[#35373c] transition-colors relative"
+          onClick={() => setShowWorkspaceDropdown(!showWorkspaceDropdown)}
+        >
           <span className="tracking-wide text-[15px]">Core Development</span>
+          <ChevronDown size={16} className={`text-white transition-transform duration-200 ${showWorkspaceDropdown ? 'rotate-180' : ''}`} />
+          
+          <AnimatePresence>
+            {showWorkspaceDropdown && (
+              <>
+                <div className="fixed inset-0 z-20" onClick={(e) => { e.stopPropagation(); setShowWorkspaceDropdown(false); }} />
+                <motion.div 
+                  initial={{ opacity: 0, scale: 0.95, y: -10 }}
+                  animate={{ opacity: 1, scale: 1, y: 0 }}
+                  exit={{ opacity: 0, scale: 0.95, y: -10 }}
+                  className="absolute top-12 left-2 right-2 z-30 rounded-md bg-[#111214] p-1.5 shadow-xl border border-black/40"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <button 
+                    onClick={() => { setShowInviteModal(true); setShowWorkspaceDropdown(false); }}
+                    className="flex w-full items-center justify-between rounded-sm px-2 py-2 text-xs font-medium text-indigo-400 hover:bg-[#4752c4] hover:text-white transition-colors"
+                  >
+                    Invite People <UserPlus size={14} />
+                  </button>
+                  
+                  {userRole === 'admin' && (
+                    <>
+                      <div className="my-1 border-t border-[#1f2023]" />
+                      <button 
+                        onClick={() => { setShowSettingsModal(true); setShowWorkspaceDropdown(false); }}
+                        className="flex w-full items-center justify-between rounded-sm px-2 py-2 text-xs font-medium text-[#dbdee1] hover:bg-[#4752c4] hover:text-white transition-colors"
+                      >
+                        Workspace Settings <Settings size={14} />
+                      </button>
+                    </>
+                  )}
+                </motion.div>
+              </>
+            )}
+          </AnimatePresence>
         </div>
         
         <div className="flex-1 overflow-y-auto px-2 py-3">
           <div className="mb-4">
-            <p className="px-2 text-[11px] font-bold uppercase tracking-wider text-[#949ba4]">Text Channels</p>
+            <div className="flex items-center justify-between px-2 mb-1 group/header relative">
+              <div className="flex items-center gap-0.5 cursor-pointer text-[#949ba4] hover:text-[#dbdee1] transition-colors">
+                <ChevronDown size={12} className="text-[#949ba4]" />
+                <p className="text-[11px] font-bold uppercase tracking-wider">Channels</p>
+              </div>
+              <button 
+                onClick={() => setShowCreateChannel(true)}
+                className="text-[#949ba4] hover:text-[#dbdee1] transition-colors p-0.5"
+              >
+                <Plus size={14} />
+              </button>
+            </div>
             <div className="mt-1 space-y-0.5">
               {channels.map((channel) => (
-                <button
-                  key={channel.id}
-                  onClick={() => setActiveChannel(channel.id)}
-                  className={`flex w-full items-center gap-2 rounded-[4px] px-2 py-1.5 text-[15px] font-medium transition-colors ${
-                    activeChannelId === channel.id
-                      ? 'bg-[#3f4248] text-white'
-                      : 'text-[#949ba4] hover:bg-[#36373d] hover:text-[#dbdee1]'
-                  }`}
-                >
-                  <Hash size={18} className={activeChannelId === channel.id ? 'text-white' : 'text-[#80848e]'} />
-                  {channel.name}
-                </button>
+                <div key={channel.id} className="group relative">
+                  <button
+                    onClick={() => setActiveChannel(channel.id)}
+                    className={`flex w-full items-center gap-2 rounded-[4px] px-2 py-1.5 text-[15px] font-medium transition-colors ${
+                      activeChannelId === channel.id
+                        ? 'bg-[#3f4248] text-white'
+                        : 'text-[#949ba4] hover:bg-[#36373d] hover:text-[#dbdee1]'
+                    }`}
+                  >
+                    {channel.isPrivate ? (
+                      <Lock size={14} className={activeChannelId === channel.id ? 'text-white' : 'text-[#80848e]'} />
+                    ) : (
+                      <Hash size={18} className={activeChannelId === channel.id ? 'text-white' : 'text-[#80848e]'} />
+                    )}
+                    <span className="truncate">{channel.name}</span>
+                  </button>
+                  <button 
+                    onClick={(e) => { e.stopPropagation(); setSelectedChannelId(channel.id); setShowChannelSettings(true); }}
+                    className="absolute right-2 top-2 opacity-0 group-hover:opacity-100 text-[#b5bac1] hover:text-[#dbdee1] transition"
+                  >
+                    <Settings size={14} />
+                  </button>
+                </div>
               ))}
             </div>
           </div>
@@ -351,6 +437,13 @@ export default function App() {
           </div>
         </div>
       </div>
+
+      {/* MODAL OVERLAY LAYER */}
+      {showCreateWorkspace && <CreateWorkspaceModal onClose={() => setShowCreateWorkspace(false)} />}
+      {showInviteModal && <InviteMembersModal onClose={() => setShowInviteModal(false)} />}
+      {showSettingsModal && <WorkspaceSettingsModal members={mockMembers} onClose={() => setShowSettingsModal(false)} />}
+      {showCreateChannel && <CreateChannelModal onClose={() => setShowCreateChannel(false)} />}
+      {showChannelSettings && <ChannelSettingsModal channelName={channels.find(c => c.id === selectedChannelId)?.name || 'channel'} onClose={() => setShowChannelSettings(false)} />}
     </div>
   );
 }

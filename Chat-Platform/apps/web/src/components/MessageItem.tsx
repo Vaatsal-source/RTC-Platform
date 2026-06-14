@@ -1,16 +1,46 @@
 import React, { useState } from 'react';
 import { MessageProps } from './types';
 import { Smile, Edit2, Trash2, MessageSquare } from 'lucide-react';
+import { DeleteMessageModal } from './Modals';
 
 interface ExtendedMessageItemProps extends MessageProps {
   onOpenThread: (msgId: string) => void;
 }
 
 export const MessageItem: React.FC<ExtendedMessageItemProps> = ({ 
-  id, user, content, timestamp, isEdited, reactions = [], replies = [], onOpenThread 
+  id, user, content: initialContent, timestamp, isEdited: initialIsEdited, reactions = [], replies = [], onOpenThread 
 }) => {
   const [isEditing, setIsEditing] = useState(false);
-  const [editValue, setEditValue] = useState(content);
+  const [editValue, setEditValue] = useState(initialContent);
+  const [displayContent, setDisplayContent] = useState(initialContent);
+  const [isEdited, setIsEdited] = useState(initialIsEdited);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [localReactions, setLocalReactions] = useState(reactions);
+
+  // Mock check for "own message" - typically matched against current user ID
+  const isOwnMessage = user.name === "Vaatsalya";
+
+  const handleEditSave = () => {
+    if (editValue.trim() !== "" && editValue !== displayContent) {
+      setDisplayContent(editValue);
+      setIsEdited(true);
+      // WebSocket event logic would trigger here
+    }
+    setIsEditing(false);
+  };
+
+  const toggleReaction = (emoji: string) => {
+    setLocalReactions(prev => prev.map(r => {
+      if (r.emoji === emoji) {
+        return {
+          ...r,
+          count: r.userReacted ? r.count - 1 : r.count + 1,
+          userReacted: !r.userReacted
+        };
+      }
+      return r;
+    }));
+  };
 
   return (
     <div className="flex items-start space-x-4 p-4 hover:bg-[#2e3035] transition-colors duration-150 group relative">
@@ -30,7 +60,7 @@ export const MessageItem: React.FC<ExtendedMessageItemProps> = ({
         >
           <MessageSquare size={16} />
         </button>
-        {user.role === 'admin' && (
+        {isOwnMessage && (
           <>
             <button 
               title="Edit Message" 
@@ -42,7 +72,7 @@ export const MessageItem: React.FC<ExtendedMessageItemProps> = ({
             <button 
               title="Delete Message" 
               className="p-2 text-rose-400 hover:bg-rose-500/10 transition"
-              onClick={() => alert(`Mock: Delete message ${id}`)}
+              onClick={() => setShowDeleteModal(true)}
             >
               <Trash2 size={16} />
             </button>
@@ -79,22 +109,27 @@ export const MessageItem: React.FC<ExtendedMessageItemProps> = ({
               type="text" 
               value={editValue} 
               onChange={(e) => setEditValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleEditSave();
+                if (e.key === 'Escape') setIsEditing(false);
+              }}
+              autoFocus
               className="w-full bg-[#383a40] text-sm text-[#dbdee1] px-3 py-1.5 rounded outline-none border border-[#5865F2]"
             />
             <div className="text-[11px] text-slate-400 mt-1">
-              Escape to <button className="text-[#00a8fc] hover:underline" onClick={() => setIsEditing(false)}>cancel</button> &bull; Enter to <button className="text-[#00a8fc] hover:underline" onClick={() => setIsEditing(false)}>save</button>
+              Escape to <button className="text-[#00a8fc] hover:underline" onClick={() => setIsEditing(false)}>cancel</button> &bull; Enter to <button className="text-[#00a8fc] hover:underline" onClick={handleEditSave}>save</button>
             </div>
           </div>
         ) : (
           <p className="text-slate-300 text-sm leading-relaxed mt-1 break-words whitespace-pre-wrap">
-            {content}
+            {displayContent}
           </p>
         )}
 
         {/* Emoji Reactions Tray */}
-        {reactions.length > 0 && (
+        {localReactions.length > 0 && (
           <div className="flex flex-wrap gap-1 mt-2">
-            {reactions.map((react, i) => (
+            {localReactions.map((react, i) => (
               <button 
                 key={i}
                 className={`flex items-center space-x-1.5 px-2 py-0.5 rounded text-xs border transition ${
@@ -102,7 +137,7 @@ export const MessageItem: React.FC<ExtendedMessageItemProps> = ({
                     ? 'bg-[#5865f2]/10 border-[#5865F2] text-[#5865F2]' 
                     : 'bg-[#2b2d31] border-transparent text-[#b5bac1] hover:border-[#3f4248]'
                 }`}
-                onClick={() => alert(`Mock: Toggle reaction ${react.emoji}`)}
+                onClick={() => toggleReaction(react.emoji)}
               >
                 <span>{react.emoji}</span>
                 <span className="text-[11px] font-semibold">{react.count}</span>
@@ -122,6 +157,14 @@ export const MessageItem: React.FC<ExtendedMessageItemProps> = ({
           </button>
         )}
       </div>
+
+      {/* Delete Confirmation Modal */}
+      {showDeleteModal && (
+        <DeleteMessageModal 
+          onClose={() => setShowDeleteModal(false)} 
+          onConfirm={() => alert(`Mock:Purging message ${id} from terminal`)} 
+        />
+      )}
     </div>
   );
 };

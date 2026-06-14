@@ -7,7 +7,7 @@ interface MessageFeedProps {
   onOpenThread: (messageId: string) => void;
 }
 
-export const MessageFeed: React.FC<MessageFeedProps> = ({ messages }) => {
+export const MessageFeed: React.FC<MessageFeedProps> = ({ messages, onOpenThread }) => {
   const feedEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -24,7 +24,7 @@ export const MessageFeed: React.FC<MessageFeedProps> = ({ messages }) => {
             user={msg.user}
             content={msg.content}
             timestamp={msg.timestamp}
-            onOpenThread={() => {}}
+            onOpenThread={onOpenThread}
           />
         ))}
         <div ref={feedEndRef} />
