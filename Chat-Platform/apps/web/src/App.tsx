@@ -5,8 +5,17 @@ import BackgroundParticles from './components/BackgroundParticles';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   Hash, MessageSquare, Terminal, Zap, Shield, ChevronRight, 
-  LogOut, LayoutDashboard, User 
+  LogOut, LayoutDashboard, User, ChevronDown, UserPlus, Settings, Plus, Lock 
 } from 'lucide-react';
+import { MessageFeed } from './components/MessageFeed';
+import { MessageProps, MemberProps } from './components/types';
+import { 
+  CreateWorkspaceModal, 
+  InviteMembersModal, 
+  WorkspaceSettingsModal,
+  CreateChannelModal,
+  ChannelSettingsModal
+} from './components/Modals';
 
 // Custom, legal-safe SVG Brand Icons
 const GithubIcon = () => (
@@ -32,20 +41,51 @@ export default function App() {
   const [showAuth, setShowAuth] = useState(false);
   const [viewOverride, setViewOverride] = useState(true); 
   const [showProfileMenu, setShowProfileMenu] = useState(false);
+  const [showWorkspaceDropdown, setShowWorkspaceDropdown] = useState(false);
   
+  // Modal States
+  const [showCreateWorkspace, setShowCreateWorkspace] = useState(false);
+  const [showInviteModal, setShowInviteModal] = useState(false);
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [showCreateChannel, setShowCreateChannel] = useState(false);
+  const [showChannelSettings, setShowChannelSettings] = useState(false);
+  const [selectedChannelId, setSelectedChannelId] = useState<string | null>(null);
+
+  // Mock Data for UI Simulation
+  const userRole = 'admin'; 
+  const mockMembers: MemberProps[] = [
+    { id: '1', name: 'Vaatsalya', role: 'admin', status: 'online' },
+    { id: '2', name: 'John Dev', role: 'member', status: 'online' },
+    { id: '3', name: 'Sarah Archi', role: 'member', status: 'offline' },
+  ];
+
+  const [messages, setMessages] = useState<MessageProps[]>([
+    {
+      id: '1',
+      user: { name: 'System Client', isSystem: true },
+      content: 'Premium Figma-aligned UI compiled. Feel free to check out seamless navigation jumping.',
+      timestamp: 'Today at 7:42 PM'
+    }
+  ]);
+
   const isAuthenticated = !!localStorage.getItem('token');
   const isViewingLanding = !isAuthenticated || viewOverride;
 
   const channels = [
-    { id: '1', name: 'general' },
-    { id: '2', name: 'engineering' },
-    { id: '3', name: 'random' },
+    { id: '1', name: 'general', isPrivate: false },
+    { id: '2', name: 'engineering', isPrivate: false },
+    { id: '3', name: 'private-ops', isPrivate: true },
   ];
 
   const handleLogout = () => {
     localStorage.removeItem('token');
     setViewOverride(true);
     window.location.reload();
+  };
+
+  const handleThreadOpen = (messageId: string) => {
+    console.log("Opening context thread for message:", messageId);
+    // You can handle sidebar state tracking logic here later if needed
   };
 
   if (!isAuthenticated && showAuth) {
@@ -122,7 +162,6 @@ export default function App() {
             <motion.div 
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.6 }}
               className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-white/[0.05] border border-white/[0.1] text-gray-300 text-xs font-semibold mb-6 backdrop-blur-md shadow-lg"
             >
               <Terminal size={12} className="text-fuchsia-400" /> WebSockets &bull; Distributed Pub/Sub Mesh
@@ -225,23 +264,124 @@ export default function App() {
 
   // --- RENDERING MODULE 3: PRODUCTION SYSTEM DESKTOP ENGINE ---
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-[#1a1d21] text-gray-200 antialiased">
-      <div className="flex p-3 w-18 flex-col items-center justify-between border-r border-gray-800 bg-[#121416]">
-        <div className="flex flex-col items-center gap-4 w-full">
-          <div className="flex h-12 w-12 cursor-pointer items-center justify-center rounded-xl bg-gradient-to-tr from-indigo-600 to-purple-600 font-bold text-white transition-all hover:rounded-2xl shadow-md shadow-indigo-600/10">
-            S1
-          </div>
-          <div className="flex h-12 w-12 cursor-pointer items-center justify-center rounded-xl bg-gray-800 border border-gray-700 font-bold text-gray-400 transition-all hover:bg-gray-700 hover:text-white hover:rounded-2xl">
-            +
-          </div>
+    <div className="flex h-screen w-screen overflow-hidden bg-[#313338] text-gray-200 antialiased select-none">
+      
+      {/* COLUMN 1: SERVER TRACK */}
+      <nav className="w-[72px] flex flex-col items-center py-3 bg-[#1e1f22] gap-2 z-10 shrink-0">
+        <div className="flex h-12 w-12 cursor-pointer items-center justify-center rounded-2xl bg-indigo-600 font-bold text-white transition-all hover:rounded-xl shadow-md">
+          S1
+        </div>
+        <div className="h-[2px] w-8 bg-[#35373c] rounded-full my-1" />
+        <button 
+          onClick={() => setShowCreateWorkspace(true)}
+          className="flex h-12 w-12 cursor-pointer items-center justify-center rounded-3xl bg-[#313338] font-bold text-emerald-500 transition-all hover:bg-emerald-500 hover:text-white hover:rounded-2xl"
+        >
+          +
+        </button>
+      </nav>
+
+      {/* COLUMN 2: CHANNEL NAV PANEL */}
+      <aside className="w-60 bg-[#2b2d31] flex flex-col shrink-0 relative z-10">
+        <div 
+          className="flex h-12 items-center justify-between border-b border-black/20 px-4 font-bold text-white shadow-sm cursor-pointer hover:bg-[#35373c] transition-colors relative"
+          onClick={() => setShowWorkspaceDropdown(!showWorkspaceDropdown)}
+        >
+          <span className="tracking-wide text-[15px]">Core Development</span>
+          <ChevronDown size={16} className={`text-white transition-transform duration-200 ${showWorkspaceDropdown ? 'rotate-180' : ''}`} />
+          
+          <AnimatePresence>
+            {showWorkspaceDropdown && (
+              <>
+                <div className="fixed inset-0 z-20" onClick={(e) => { e.stopPropagation(); setShowWorkspaceDropdown(false); }} />
+                <motion.div 
+                  initial={{ opacity: 0, scale: 0.95, y: -10 }}
+                  animate={{ opacity: 1, scale: 1, y: 0 }}
+                  exit={{ opacity: 0, scale: 0.95, y: -10 }}
+                  className="absolute top-12 left-2 right-2 z-30 rounded-md bg-[#111214] p-1.5 shadow-xl border border-black/40"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <button 
+                    onClick={() => { setShowInviteModal(true); setShowWorkspaceDropdown(false); }}
+                    className="flex w-full items-center justify-between rounded-sm px-2 py-2 text-xs font-medium text-indigo-400 hover:bg-[#4752c4] hover:text-white transition-colors"
+                  >
+                    Invite People <UserPlus size={14} />
+                  </button>
+                  
+                  {userRole === 'admin' && (
+                    <>
+                      <div className="my-1 border-t border-[#1f2023]" />
+                      <button 
+                        onClick={() => { setShowSettingsModal(true); setShowWorkspaceDropdown(false); }}
+                        className="flex w-full items-center justify-between rounded-sm px-2 py-2 text-xs font-medium text-[#dbdee1] hover:bg-[#4752c4] hover:text-white transition-colors"
+                      >
+                        Workspace Settings <Settings size={14} />
+                      </button>
+                    </>
+                  )}
+                </motion.div>
+              </>
+            )}
+          </AnimatePresence>
         </div>
         
-        <div className="relative">
+        <div className="flex-1 overflow-y-auto px-2 py-3">
+          <div className="mb-4">
+            <div className="flex items-center justify-between px-2 mb-1 group/header relative">
+              <div className="flex items-center gap-0.5 cursor-pointer text-[#949ba4] hover:text-[#dbdee1] transition-colors">
+                <ChevronDown size={12} className="text-[#949ba4]" />
+                <p className="text-[11px] font-bold uppercase tracking-wider">Channels</p>
+              </div>
+              <button 
+                onClick={() => setShowCreateChannel(true)}
+                className="text-[#949ba4] hover:text-[#dbdee1] transition-colors p-0.5"
+              >
+                <Plus size={14} />
+              </button>
+            </div>
+            <div className="mt-1 space-y-0.5">
+              {channels.map((channel) => (
+                <div key={channel.id} className="group relative">
+                  <button
+                    onClick={() => setActiveChannel(channel.id)}
+                    className={`flex w-full items-center gap-2 rounded-[4px] px-2 py-1.5 text-[15px] font-medium transition-colors ${
+                      activeChannelId === channel.id
+                        ? 'bg-[#3f4248] text-white'
+                        : 'text-[#949ba4] hover:bg-[#36373d] hover:text-[#dbdee1]'
+                    }`}
+                  >
+                    {channel.isPrivate ? (
+                      <Lock size={14} className={activeChannelId === channel.id ? 'text-white' : 'text-[#80848e]'} />
+                    ) : (
+                      <Hash size={18} className={activeChannelId === channel.id ? 'text-white' : 'text-[#80848e]'} />
+                    )}
+                    <span className="truncate">{channel.name}</span>
+                  </button>
+                  <button 
+                    onClick={(e) => { e.stopPropagation(); setSelectedChannelId(channel.id); setShowChannelSettings(true); }}
+                    className="absolute right-2 top-2 opacity-0 group-hover:opacity-100 text-[#b5bac1] hover:text-[#dbdee1] transition"
+                  >
+                    <Settings size={14} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* DISCORD-COMPLIANT USER DRAWER BAR */}
+        <div className="bg-[#232428] h-[52px] px-2 flex items-center justify-between relative">
           <button 
             onClick={() => setShowProfileMenu(!showProfileMenu)}
-            className="h-10 w-10 rounded-full bg-gradient-to-tr from-purple-500 to-fuchsia-500 border border-gray-700 flex items-center justify-center font-bold text-white shadow-md hover:scale-105 transition"
+            className="flex items-center gap-2 p-1 rounded hover:bg-[#35373c] transition-colors text-left flex-1 min-w-0"
           >
-            <User size={16} />
+            <div className="h-8 w-8 rounded-full bg-gradient-to-tr from-purple-500 to-fuchsia-500 flex items-center justify-center font-bold text-white text-xs shrink-0 relative">
+              <User size={14} />
+              <div className="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full bg-emerald-500 border-2 border-[#232428]" />
+            </div>
+            <div className="truncate leading-tight">
+              <p className="text-xs font-bold text-white truncate">Vaatsalya</p>
+              <p className="text-[11px] text-[#949ba4] truncate">Online</p>
+            </div>
           </button>
 
           <AnimatePresence>
@@ -249,21 +389,21 @@ export default function App() {
               <>
                 <div className="fixed inset-0 z-20" onClick={() => setShowProfileMenu(false)} />
                 <motion.div 
-                  initial={{ opacity: 0, scale: 0.95, y: 10 }}
+                  initial={{ opacity: 0, scale: 0.95, y: -10 }}
                   animate={{ opacity: 1, scale: 1, y: 0 }}
-                  exit={{ opacity: 0, scale: 0.95, y: 10 }}
-                  className="absolute bottom-12 left-0 z-30 w-48 rounded-lg border border-gray-800 bg-[#1f2226] p-1.5 shadow-xl"
+                  exit={{ opacity: 0, scale: 0.95, y: -10 }}
+                  className="absolute bottom-14 left-2 z-30 w-48 rounded-md bg-[#111214] p-1.5 shadow-xl border border-black/40"
                 >
                   <button 
                     onClick={() => { setViewOverride(true); setShowProfileMenu(false); }}
-                    className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-xs font-semibold text-gray-300 hover:bg-gray-800 hover:text-white transition"
+                    className="flex w-full items-center gap-2 rounded-sm px-2 py-2 text-xs font-medium text-[#dbdee1] hover:bg-[#4752c4] hover:text-white transition-colors"
                   >
                     <LayoutDashboard size={14} /> View Landing Page
                   </button>
-                  <div className="my-1 border-t border-gray-800" />
+                  <div className="my-1 border-t border-[#1f2023]" />
                   <button 
                     onClick={handleLogout}
-                    className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-xs font-semibold text-rose-400 hover:bg-rose-500/10 transition"
+                    className="flex w-full items-center gap-2 rounded-sm px-2 py-2 text-xs font-medium text-rose-400 hover:bg-rose-500/10 transition-colors"
                   >
                     <LogOut size={14} /> Disconnect Session
                   </button>
@@ -272,69 +412,38 @@ export default function App() {
             )}
           </AnimatePresence>
         </div>
-      </div>
+      </aside>
 
-      <div className="flex w-64 flex-col bg-[#1f2226]">
-        <div className="flex h-14 items-center justify-between border-b border-gray-800 px-4 font-bold text-white shadow-sm">
-          <span className="tracking-wide">Core Development</span>
-        </div>
-        
-        <div className="flex-1 overflow-y-auto px-2 py-4">
-          <div className="mb-4">
-            <p className="px-2 text-xs font-bold uppercase tracking-wider text-gray-500">Channels</p>
-            <div className="mt-2 space-y-0.5">
-              {channels.map((channel) => (
-                <button
-                  key={channel.id}
-                  onClick={() => setActiveChannel(channel.id)}
-                  className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm font-semibold transition ${
-                    activeChannelId === channel.id
-                      ? 'bg-indigo-600/20 text-indigo-400 border border-indigo-500/10'
-                      : 'text-gray-400 hover:bg-gray-800 hover:text-gray-200'
-                  }`}
-                >
-                  <Hash size={15} className={activeChannelId === channel.id ? 'text-indigo-400' : 'text-gray-500'} />
-                  {channel.name}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div className="flex flex-1 flex-col bg-[#1a1d21]">
-        <div className="flex h-14 items-center border-b border-gray-800 px-6 shadow-sm">
-          <div className="flex items-center gap-2 font-bold text-white">
-            <Hash size={18} className="text-gray-500" />
+      {/* COLUMN 3: MAIN CHAT INTERFACE */}
+      <div className="flex flex-1 flex-col bg-[#313338] min-w-0">
+        <div className="flex h-12 items-center border-b border-black/20 px-4 shadow-sm shrink-0">
+          <div className="flex items-center gap-2 font-bold text-white text-[15px]">
+            <Hash size={24} className="text-[#80848e]" />
             <span>{channels.find(c => c.id === activeChannelId)?.name || 'select-a-channel'}</span>
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-6 space-y-4">
-          <div className="flex items-start gap-3">
-            <div className="h-9 w-9 rounded-lg bg-indigo-600/10 border border-indigo-500/20 flex items-center justify-center font-bold text-indigo-400 shadow-sm">S</div>
-            <div>
-              <div className="flex items-baseline gap-2">
-                <span className="font-bold text-white text-sm">System Client</span>
-                <span className="text-[10px] text-gray-500 font-semibold">Online</span>
-              </div>
-              <p className="text-sm text-gray-300 mt-0.5 max-w-2xl leading-relaxed">
-                Premium Figma-aligned UI compiled. Feel free to access your new bottom-left profile avatar to check out seamless navigation jumping.
-              </p>
-            </div>
-          </div>
-        </div>
+        {/* INTEGRATED CHAT FEED CONTAINER MODULE */}
+        <MessageFeed messages={messages} onOpenThread={handleThreadOpen} />
 
-        <div className="p-4 bg-[#1a1d21]">
-          <div className="relative flex items-center rounded-xl border border-gray-800 bg-[#22252a] px-4 py-3 focus-within:border-gray-700 shadow-lg transition">
+        {/* TEXT INPUT ZONE */}
+        <div className="px-4 pb-6 bg-[#313338]">
+          <div className="relative flex items-center rounded-lg bg-[#383a40] px-4 py-2.5 shadow-md">
             <input
               type="text"
-              placeholder={`Message #${channels.find(c => c.id === activeChannelId)?.name || 'channel'}...`}
-              className="w-full bg-transparent text-sm text-gray-200 placeholder-gray-600 outline-none"
+              placeholder={`Message #${channels.find(c => c.id === activeChannelId)?.name || 'channel'}`}
+              className="w-full bg-transparent text-[15px] text-[#dbdee1] placeholder-[#6d737d] outline-none"
             />
           </div>
         </div>
       </div>
+
+      {/* MODAL OVERLAY LAYER */}
+      {showCreateWorkspace && <CreateWorkspaceModal onClose={() => setShowCreateWorkspace(false)} />}
+      {showInviteModal && <InviteMembersModal onClose={() => setShowInviteModal(false)} />}
+      {showSettingsModal && <WorkspaceSettingsModal members={mockMembers} onClose={() => setShowSettingsModal(false)} />}
+      {showCreateChannel && <CreateChannelModal onClose={() => setShowCreateChannel(false)} />}
+      {showChannelSettings && <ChannelSettingsModal channelName={channels.find(c => c.id === selectedChannelId)?.name || 'channel'} onClose={() => setShowChannelSettings(false)} />}
     </div>
   );
 }
