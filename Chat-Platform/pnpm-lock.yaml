@@ -44,6 +44,9 @@ importers:
       jsonwebtoken:
         specifier: ^9.0.3
         version: 9.0.3
+      mongoose:
+        specifier: ^9.7.0
+        version: 9.7.0
     devDependencies:
       '@types/bcryptjs':
         specifier: ^3.0.0
