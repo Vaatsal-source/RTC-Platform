@@ -1,11 +1,13 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useAppStore } from './store/useAppStore';
 import AuthPage from './components/AuthPage';
 import BackgroundParticles from './components/BackgroundParticles';
+import { useWebSocket } from './lib/useWebSocket';
 import { motion, AnimatePresence } from 'framer-motion';
+import EmojiPicker, { EmojiClickData, Theme } from 'emoji-picker-react';
 import { 
   Hash, MessageSquare, Terminal, Zap, Shield, ChevronRight, 
-  LogOut, LayoutDashboard, User 
+  LogOut, LayoutDashboard, User, Smile
 } from 'lucide-react';
 
 // Custom, legal-safe SVG Brand Icons
@@ -27,11 +29,44 @@ const LinkedinIcon = () => (
   </svg>
 );
 
+// ─── Message shape used purely on the frontend for rendering ─────────────────
+interface ChatMessage {
+  id: string;
+  tempId?: string;
+  channelId: string;
+  content: string;
+  timestamp: string;
+  user: { id: string; name: string };
+  pending?: boolean;
+  parentMessageId?: string;
+  deleted?: boolean;
+  isEdited?: boolean;
+  reactions?: { emoji: string; userIds: string[] }[];
+}
+
 export default function App() {
   const { activeChannelId, setActiveChannel } = useAppStore();
   const [showAuth, setShowAuth] = useState(false);
   const [viewOverride, setViewOverride] = useState(true); 
   const [showProfileMenu, setShowProfileMenu] = useState(false);
+
+  // ── Real-time messaging state ─────────────────────────────────────────────
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [messageInput, setMessageInput] = useState('');
+  const [replyingTo, setReplyingTo] = useState<ChatMessage | null>(null);
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [editInput, setEditInput] = useState('');
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [hasMoreHistory, setHasMoreHistory] = useState(true);
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<ChatMessage | null>(null);
+  const [emojiPickerFor, setEmojiPickerFor] = useState<string | null>(null);
+  const [fullPickerFor, setFullPickerFor] = useState<string | null>(null);
+  const [showInputEmojiPicker, setShowInputEmojiPicker] = useState(false);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [typingUsers, setTypingUsers] = useState<Record<string, string>>({});
+  const messagesEndRef = useRef<HTMLDivElement>(null);
   
   const isAuthenticated = !!localStorage.getItem('token');
   const isViewingLanding = !isAuthenticated || viewOverride;
@@ -41,6 +76,273 @@ export default function App() {
     { id: '2', name: 'engineering' },
     { id: '3', name: 'random' },
   ];
+
+  // ── WebSocket wiring ───────────────────────────────────────────────────────
+  const { joinChannel, sendMessage, sendTypingStart, sendTypingStop, deleteMessage, editMessage, sendThreadReply, loadMoreMessages, addReaction, removeReaction } = useWebSocket({
+    onNewMessage: (payload) => {
+      setMessages((prev) => {
+        const existingIndex = prev.findIndex((m) => m.tempId === payload.tempId);
+        if (existingIndex !== -1) {
+          const updated = [...prev];
+          updated[existingIndex] = { ...payload, pending: false };
+          return updated;
+        }
+        return [...prev, { ...payload, pending: false }];
+      });
+    },
+    onTypingUpdate: (payload) => {
+      setTypingUsers((prev) => {
+        const updated = { ...prev };
+        if (payload.isTyping) {
+          updated[payload.userId] = payload.username;
+        } else {
+          delete updated[payload.userId];
+        }
+        return updated;
+      });
+    },
+    onMessageDeleted: (payload) => {
+      setMessages((prev) =>
+        prev.map((m) => (m.id === payload.messageId ? { ...m, deleted: true } : m))
+      );
+    },
+    onMessageEdited: (payload) => {
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === payload.messageId
+            ? { ...m, content: payload.newContent, isEdited: true }
+            : m
+        )
+      );
+    },
+    onThreadReply: (payload) => {
+      setMessages((prev) => {
+        const existingIndex = prev.findIndex((m) => m.tempId === payload.tempId);
+        if (existingIndex !== -1) {
+          const updated = [...prev];
+          updated[existingIndex] = { ...payload, pending: false };
+          return updated;
+        }
+        return [...prev, { ...payload, pending: false }];
+      });
+    },
+    onMessageHistory: (payload) => {
+      setMessages(payload.messages || []);
+      setHasMoreHistory((payload.messages || []).length === 50);
+    },
+    onMoreMessagesLoaded: (payload) => {
+      setMessages((prev) => [...(payload.messages || []), ...prev]);
+      setHasMoreHistory(payload.hasMore);
+      setIsLoadingMore(false);
+    },
+    onConnected: (payload) => {
+      if (payload.userId) setCurrentUserId(payload.userId);
+    },
+    onReactionUpdate: (payload) => {
+      const { messageId, emoji, userId, action } = payload;
+      setMessages((prev) =>
+        prev.map((m) => {
+          if (m.id !== messageId) return m;
+
+          const reactions = m.reactions ? [...m.reactions] : [];
+          const existingIndex = reactions.findIndex((r) => r.emoji === emoji);
+
+          if (action === 'add') {
+            if (existingIndex !== -1) {
+              if (!reactions[existingIndex].userIds.includes(userId)) {
+                reactions[existingIndex] = {
+                  ...reactions[existingIndex],
+                  userIds: [...reactions[existingIndex].userIds, userId],
+                };
+              }
+            } else {
+              reactions.push({ emoji, userIds: [userId] });
+            }
+          } else {
+            if (existingIndex !== -1) {
+              const updatedUserIds = reactions[existingIndex].userIds.filter((id) => id !== userId);
+              if (updatedUserIds.length === 0) {
+                reactions.splice(existingIndex, 1);
+              } else {
+                reactions[existingIndex] = { ...reactions[existingIndex], userIds: updatedUserIds };
+              }
+            }
+          }
+
+          return { ...m, reactions };
+        })
+      );
+    },
+  });
+
+  useEffect(() => {
+    if (!isAuthenticated || isViewingLanding || !activeChannelId) return;
+    setMessages([]);
+    setTypingUsers({});
+    setHasMoreHistory(true);
+    joinChannel(activeChannelId);
+  }, [activeChannelId, isAuthenticated, isViewingLanding, joinChannel]);
+
+  const prevMessageCountRef = useRef(0);
+  useEffect(() => {
+    if (messages.length > prevMessageCountRef.current && !isLoadingMore) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+    prevMessageCountRef.current = messages.length;
+  }, [messages, isLoadingMore]);
+
+  const handleMessagesScroll = () => {
+    const container = messagesContainerRef.current;
+    if (!container || isLoadingMore || !hasMoreHistory || !activeChannelId) return;
+
+    if (container.scrollTop < 100) {
+      const oldestMessage = messages[0];
+      if (!oldestMessage) return;
+
+      setIsLoadingMore(true);
+      loadMoreMessages(activeChannelId, oldestMessage.timestamp);
+    }
+  };
+
+  // ── Resets the textarea's height back to a single row after sending ──────
+  const resetTextareaHeight = () => {
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto';
+    }
+  };
+
+  const handleSend = () => {
+    const trimmed = messageInput.trim();
+    if (!trimmed || !activeChannelId) return;
+
+    if (replyingTo) {
+      const tempId = sendThreadReply(replyingTo.id, activeChannelId, trimmed);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: tempId,
+          tempId,
+          channelId: activeChannelId,
+          content: trimmed,
+          timestamp: new Date().toISOString(),
+          user: { id: 'me', name: 'You' },
+          pending: true,
+          parentMessageId: replyingTo.id,
+        },
+      ]);
+      setReplyingTo(null);
+    } else {
+      const tempId = sendMessage(activeChannelId, trimmed);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: tempId,
+          tempId,
+          channelId: activeChannelId,
+          content: trimmed,
+          timestamp: new Date().toISOString(),
+          user: { id: 'me', name: 'You' },
+          pending: true,
+        },
+      ]);
+    }
+
+    setMessageInput('');
+    sendTypingStop(activeChannelId);
+    resetTextareaHeight();
+  };
+
+  const handleRequestDelete = (msg: ChatMessage) => {
+    setDeleteTarget(msg);
+  };
+
+  const handleConfirmDelete = () => {
+    if (!deleteTarget || !activeChannelId) return;
+    setMessages((prev) =>
+      prev.map((m) => (m.id === deleteTarget.id ? { ...m, deleted: true } : m))
+    );
+    deleteMessage(deleteTarget.id, activeChannelId);
+    setDeleteTarget(null);
+  };
+
+  const handleCancelDelete = () => {
+    setDeleteTarget(null);
+  };
+
+  const toggleReaction = (msg: ChatMessage, emoji: string) => {
+    if (!activeChannelId || !currentUserId) return;
+
+    const existing = msg.reactions?.find((r) => r.emoji === emoji);
+    const alreadyReacted = existing?.userIds.includes(currentUserId);
+
+    // Find if user has ANY existing reaction on this message
+    const previousReaction = msg.reactions?.find(
+      (r) => r.emoji !== emoji && r.userIds.includes(currentUserId)
+    );
+
+    if (alreadyReacted) {
+      // Same emoji clicked again → remove it (toggle off)
+      removeReaction(msg.id, activeChannelId, emoji);
+    } else {
+      // Remove previous reaction first if exists
+      if (previousReaction) {
+        removeReaction(msg.id, activeChannelId, previousReaction.emoji);
+      }
+      addReaction(msg.id, activeChannelId, emoji);
+    }
+
+    setEmojiPickerFor(null);
+  };
+
+  const QUICK_EMOJIS = ['👍', '❤️', '😂', '🎉', '😮', '🔥'];
+
+  const handleStartEdit = (msg: ChatMessage) => {
+    setEditingMessageId(msg.id);
+    setEditInput(msg.content);
+  };
+
+  const handleCancelEdit = () => {
+    setEditingMessageId(null);
+    setEditInput('');
+  };
+
+  const handleSaveEdit = () => {
+    const trimmed = editInput.trim();
+    if (!trimmed || !editingMessageId || !activeChannelId) return;
+
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.id === editingMessageId ? { ...m, content: trimmed, isEdited: true } : m
+      )
+    );
+    editMessage(editingMessageId, activeChannelId, trimmed);
+    setEditingMessageId(null);
+    setEditInput('');
+  };
+
+  // ── Composer input: now a <textarea>, so it supports multi-line text ─────
+  const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setMessageInput(e.target.value);
+    if (activeChannelId) sendTypingStart(activeChannelId);
+  };
+
+  // Enter alone   -> send the message
+  // Shift + Enter -> insert a newline (default textarea behavior, so we
+  //                  simply don't call preventDefault in that case)
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
+  };
+
+  // Auto-grow the textarea as the user adds lines, capped at a max height
+  // so a very long message doesn't take over the whole screen.
+  const handleTextareaInput = (e: React.FormEvent<HTMLTextAreaElement>) => {
+    const el = e.currentTarget;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+  };
 
   const handleLogout = () => {
     localStorage.removeItem('token');
@@ -65,7 +367,6 @@ export default function App() {
     return (
       <div className="min-h-screen w-screen text-gray-200 antialiased flex flex-col relative overflow-x-hidden bg-[#000000] select-none">
         
-        {/* Global Navigation Header - Pinned at the top over everything */}
         <header className="absolute top-0 inset-x-0 max-w-7xl w-full mx-auto px-8 h-24 flex items-center justify-between z-50">
           <motion.div 
             initial={{ opacity: 0, x: -20 }}
@@ -102,10 +403,8 @@ export default function App() {
           </motion.div>
         </header>
 
-        {/* HERO SECTION - Text sitting ON TOP of the Blueprint Image */}
         <div className="relative w-full pt-40 pb-32 flex flex-col items-center justify-center min-h-[85vh]">
           
-          {/* THE BACKGROUND IMAGE LAYER */}
           <div className="absolute inset-0 z-0 pointer-events-none overflow-hidden">
             <BackgroundParticles />
             <img 
@@ -113,11 +412,9 @@ export default function App() {
               alt="Background Blueprint" 
               className="w-full h-full object-cover opacity-60"
             />
-            {/* The Gradient Fade - Transitions the image smoothly into the solid black section below */}
             <div className="absolute inset-0 bg-gradient-to-b from-[#000000]/40 via-[#000000]/60 to-[#000000]" />
           </div>
 
-          {/* THE FOREGROUND TEXT LAYER */}
           <main className="relative z-10 max-w-6xl mx-auto text-center px-6 flex flex-col items-center w-full">
             <motion.div 
               initial={{ opacity: 0, y: 20 }}
@@ -169,7 +466,6 @@ export default function App() {
           </main>
         </div>
 
-        {/* CARDS SECTION - Sits elegantly below the hero, hugging the fade transition */}
         <div className="relative bg-[#000000] w-full z-20 flex-1">
           <div className="max-w-6xl mx-auto px-6 pb-24 -mt-16">
             <motion.div 
@@ -197,7 +493,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* FOOTER SECTION */}
         <footer className="relative w-full border-t border-white/[0.06] bg-[#050505] z-20">
           <div className="max-w-7xl mx-auto px-8 py-8 flex flex-col sm:flex-row items-center justify-between gap-4">
             <div className="flex items-center gap-2 text-[10px] font-bold text-gray-500 tracking-widest uppercase">
@@ -310,7 +605,18 @@ export default function App() {
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-6 space-y-4">
+        <div
+          ref={messagesContainerRef}
+          onScroll={handleMessagesScroll}
+          className="flex-1 overflow-y-auto p-6 space-y-4"
+        >
+          {isLoadingMore && (
+            <p className="text-center text-xs text-gray-500 italic">Loading older messages...</p>
+          )}
+          {!hasMoreHistory && messages.length > 0 && (
+            <p className="text-center text-xs text-gray-600 italic">Beginning of channel history</p>
+          )}
+
           <div className="flex items-start gap-3">
             <div className="h-9 w-9 rounded-lg bg-indigo-600/10 border border-indigo-500/20 flex items-center justify-center font-bold text-indigo-400 shadow-sm">S</div>
             <div>
@@ -323,18 +629,292 @@ export default function App() {
               </p>
             </div>
           </div>
+
+          {messages.map((msg) => {
+            const isOwnMessage = msg.user.id === 'me' || (currentUserId !== null && msg.user.id === currentUserId);
+            const isReply = !!msg.parentMessageId;
+            const isBeingEdited = editingMessageId === msg.id;
+
+            return (
+              <div
+                key={msg.tempId || msg.id}
+                className={`group flex items-start gap-3 ${isReply ? 'ml-10 pl-3 border-l-2 border-gray-800' : ''}`}
+              >
+                <div className="h-9 w-9 rounded-lg bg-purple-600/10 border border-purple-500/20 flex items-center justify-center font-bold text-purple-400 shadow-sm">
+                  {msg.user.name.charAt(0).toUpperCase()}
+                </div>
+                <div className="flex-1">
+                  <div className="flex items-baseline gap-2">
+                    <span className="font-bold text-white text-sm">{msg.user.name}</span>
+                    <span className="text-[10px] text-gray-500 font-semibold">
+                      {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </span>
+                    {msg.pending && (
+                      <span className="text-[10px] text-gray-600 font-semibold italic">sending...</span>
+                    )}
+                    {msg.isEdited && !msg.deleted && (
+                      <span className="text-[10px] text-gray-600 font-semibold italic">(edited)</span>
+                    )}
+
+                    {!msg.deleted && !isBeingEdited && (
+                      <span className="opacity-0 group-hover:opacity-100 transition flex items-center gap-2 ml-1">
+                        <button
+                          onClick={() => setEmojiPickerFor(emojiPickerFor === msg.id ? null : msg.id)}
+                          className="text-[10px] text-gray-500 hover:text-yellow-400 font-semibold"
+                        >
+                          React
+                        </button>
+                        <button
+                          onClick={() => setReplyingTo(msg)}
+                          className="text-[10px] text-gray-500 hover:text-indigo-400 font-semibold"
+                        >
+                          Reply
+                        </button>
+                        {isOwnMessage && (
+                          <>
+                            <button
+                              onClick={() => handleStartEdit(msg)}
+                              className="text-[10px] text-gray-500 hover:text-amber-400 font-semibold"
+                            >
+                              Edit
+                            </button>
+                            <button
+                              onClick={() => handleRequestDelete(msg)}
+                              className="text-[10px] text-gray-500 hover:text-rose-400 font-semibold"
+                            >
+                              Delete
+                            </button>
+                          </>
+                        )}
+                      </span>
+                    )}
+                  </div>
+
+                  {/* ── Reaction picker: quick row + full picker toggle ───────── */}
+                  {emojiPickerFor === msg.id && (
+                    <div className="relative">
+                      <div
+                        className="fixed inset-0 z-20"
+                        onClick={() => { setEmojiPickerFor(null); setFullPickerFor(null); }}
+                      />
+                      <div className="absolute z-30 mt-1 flex flex-col gap-1.5">
+                        <div className="flex items-center gap-1 rounded-lg border border-gray-800 bg-[#1f2226] px-2 py-1.5 shadow-xl">
+                          {QUICK_EMOJIS.map((emoji) => (
+                            <button
+                              key={emoji}
+                              onClick={() => toggleReaction(msg, emoji)}
+                              className="text-base hover:scale-125 transition-transform px-0.5"
+                            >
+                              {emoji}
+                            </button>
+                          ))}
+                          <div className="w-px h-5 bg-gray-800 mx-0.5" />
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setFullPickerFor(fullPickerFor === msg.id ? null : msg.id);
+                            }}
+                            className="text-gray-500 hover:text-gray-300 px-1"
+                            title="More emojis"
+                          >
+                            <Smile size={16} />
+                          </button>
+                        </div>
+
+                        {/* Full emoji picker */}
+                        {fullPickerFor === msg.id && (
+                          <div onClick={(e) => e.stopPropagation()}>
+                            <EmojiPicker
+                              theme={Theme.DARK}
+                              onEmojiClick={(emojiData: EmojiClickData) => {
+                                toggleReaction(msg, emojiData.emoji);
+                                setFullPickerFor(null);
+                              }}
+                              width={300}
+                              height={350}
+                            />
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {msg.deleted ? (
+                    <p className="text-sm mt-0.5 max-w-2xl leading-relaxed text-gray-600 italic">
+                      This message was deleted
+                    </p>
+                  ) : isBeingEdited ? (
+                    <div className="mt-1 flex items-center gap-2 max-w-2xl">
+                      <input
+                        type="text"
+                        value={editInput}
+                        onChange={(e) => setEditInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') { e.preventDefault(); handleSaveEdit(); }
+                          if (e.key === 'Escape') handleCancelEdit();
+                        }}
+                        autoFocus
+                        className="flex-1 bg-[#22252a] border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-200 outline-none focus:border-indigo-500"
+                      />
+                      <button
+                        onClick={handleSaveEdit}
+                        className="text-xs text-indigo-400 hover:text-indigo-300 font-semibold"
+                      >
+                        Save
+                      </button>
+                      <button
+                        onClick={handleCancelEdit}
+                        className="text-xs text-gray-500 hover:text-gray-300 font-semibold"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  ) : (
+                    <p className={`text-sm mt-0.5 max-w-2xl leading-relaxed whitespace-pre-wrap ${msg.pending ? 'text-gray-500' : 'text-gray-300'}`}>
+                      {msg.content}
+                    </p>
+                  )}
+
+                  {/* ── Reaction pills ──────────────────────────────────────── */}
+                  {!msg.deleted && msg.reactions && msg.reactions.length > 0 && (
+                    <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
+                      {msg.reactions.map((r) => {
+                        const reactedByMe = currentUserId ? r.userIds.includes(currentUserId) : false;
+                        return (
+                          <button
+                            key={r.emoji}
+                            onClick={() => toggleReaction(msg, r.emoji)}
+                            className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-xs border transition ${
+                              reactedByMe
+                                ? 'bg-indigo-600/20 border-indigo-500/40 text-indigo-300'
+                                : 'bg-[#22252a] border-gray-800 text-gray-400 hover:border-gray-700'
+                            }`}
+                          >
+                            <span>{r.emoji}</span>
+                            <span className="font-semibold">{r.userIds.length}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+
+          {/* ── Typing indicator ─────────────────────────────────────────── */}
+          {Object.values(typingUsers).length > 0 && (
+            <p className="text-xs text-gray-500 italic px-1">
+              {Object.values(typingUsers).join(', ')} {Object.values(typingUsers).length === 1 ? 'is' : 'are'} typing...
+            </p>
+          )}
+
+          <div ref={messagesEndRef} />
         </div>
 
-        <div className="p-4 bg-[#1a1d21]">
-          <div className="relative flex items-center rounded-xl border border-gray-800 bg-[#22252a] px-4 py-3 focus-within:border-gray-700 shadow-lg transition">
-            <input
-              type="text"
-              placeholder={`Message #${channels.find(c => c.id === activeChannelId)?.name || 'channel'}...`}
-              className="w-full bg-transparent text-sm text-gray-200 placeholder-gray-600 outline-none"
-            />
+        {/* ── Reply banner ──────────────────────────────────────────────────── */}
+        {replyingTo && (
+          <div className="px-4 pt-2 flex items-center justify-between bg-[#1a1d21]">
+            <span className="text-xs text-gray-400">
+              Replying to <span className="font-semibold text-gray-300">{replyingTo.user.name}</span>: "{replyingTo.content.slice(0, 40)}{replyingTo.content.length > 40 ? '...' : ''}"
+            </span>
+            <button
+              onClick={() => setReplyingTo(null)}
+              className="text-xs text-gray-500 hover:text-gray-300 font-semibold"
+            >
+              Cancel
+            </button>
           </div>
+        )}
+
+        {/* ── Composer: now a multi-line <textarea> ───────────────────────────
+            Enter alone sends the message; Shift+Enter inserts a newline.
+            The textarea auto-grows (capped at max-h-40 worth of pixels via
+            handleTextareaInput) so longer messages remain fully visible
+            while typing, like WhatsApp/Slack/Discord composers. */}
+        <div className="p-4 bg-[#1a1d21]">
+          <div className="relative flex items-end rounded-xl border border-gray-800 bg-[#22252a] px-4 py-3 focus-within:border-gray-700 shadow-lg transition">
+            <textarea
+              ref={textareaRef}
+              value={messageInput}
+              onChange={handleInputChange}
+              onKeyDown={handleKeyDown}
+              onInput={handleTextareaInput}
+              placeholder={replyingTo ? `Reply to ${replyingTo.user.name}...` : `Message #${channels.find(c => c.id === activeChannelId)?.name || 'channel'}...`}
+              rows={1}
+              className="w-full bg-transparent text-sm text-gray-200 placeholder-gray-600 outline-none resize-none max-h-40 overflow-y-auto leading-relaxed"
+            />
+            <button
+              onClick={() => setShowInputEmojiPicker(!showInputEmojiPicker)}
+              className="ml-2 text-gray-500 hover:text-yellow-400 transition flex-shrink-0"
+              title="Add emoji"
+            >
+              <Smile size={18} />
+            </button>
+
+            {/* Input emoji picker */}
+            {showInputEmojiPicker && (
+              <>
+                <div className="fixed inset-0 z-20" onClick={() => setShowInputEmojiPicker(false)} />
+                <div className="absolute bottom-12 right-2 z-30" onClick={(e) => e.stopPropagation()}>
+                  <EmojiPicker
+                    theme={Theme.DARK}
+                    onEmojiClick={(emojiData: EmojiClickData) => {
+                      setMessageInput((prev) => prev + emojiData.emoji);
+                    }}
+                    width={300}
+                    height={350}
+                  />
+                </div>
+              </>
+            )}
+          </div>
+          <p className="text-[10px] text-gray-600 mt-1 px-1">Enter to send &bull; Shift+Enter for new line</p>
         </div>
       </div>
+
+      {/* ── Delete Confirmation Modal ─────────────────────────────────────── */}
+      <AnimatePresence>
+        {deleteTarget && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40"
+              onClick={handleCancelDelete}
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 10 }}
+              className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-50 w-full max-w-sm rounded-xl border border-gray-800 bg-[#1f2226] p-5 shadow-2xl"
+            >
+              <h3 className="text-sm font-bold text-white">Delete message?</h3>
+              <p className="text-xs text-gray-400 mt-2 leading-relaxed">
+                This can't be undone. Everyone in this channel will see that the message was deleted.
+              </p>
+              <div className="mt-4 p-2.5 rounded-lg bg-[#22252a] border border-gray-800">
+                <p className="text-xs text-gray-400 truncate">"{deleteTarget.content}"</p>
+              </div>
+              <div className="mt-4 flex items-center justify-end gap-2">
+                <button
+                  onClick={handleCancelDelete}
+                  className="px-3 py-1.5 rounded-lg text-xs font-semibold text-gray-300 hover:bg-gray-800 transition"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleConfirmDelete}
+                  className="px-3 py-1.5 rounded-lg text-xs font-semibold text-white bg-rose-600 hover:bg-rose-500 transition"
+                >
+                  Delete
+                </button>
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
