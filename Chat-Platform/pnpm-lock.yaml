@@ -41,9 +41,15 @@ importers:
       express:
         specifier: ^5.2.1
         version: 5.2.1
+      ioredis:
+        specifier: ^5.11.1
+        version: 5.11.1
       jsonwebtoken:
         specifier: ^9.0.3
         version: 9.0.3
+      mongoose:
+        specifier: ^9.7.0
+        version: 9.7.0
     devDependencies:
       '@types/bcryptjs':
         specifier: ^3.0.0
