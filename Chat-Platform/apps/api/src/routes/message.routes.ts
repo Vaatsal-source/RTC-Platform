@@ -5,15 +5,14 @@ import { cacheMiddleware } from "../middleware/cache.js";
 
 const router = Router();
 
+const MESSAGE_LIMIT = 50;
+
 router.post("/send", async (req, res) => {
     try {
         const { senderId, channelId, content } = req.body;
         const message = new Message({ senderId, channelId, content });
         await message.save();
-
-        // Invalidate messages cache for this channel
         await redisClient.del(`messages:channel:${channelId}`);
-
         res.status(201).json({ success: true, message });
     } catch (err) {
         console.log(err);
@@ -27,7 +26,10 @@ router.get(
     async (req, res) => {
         try {
             const { channelId } = req.params;
-            const messages = await Message.find({ channelId }).populate("senderId", "name email");
+            const messages = await Message.find({ channelId })
+                .populate("senderId", "name email")
+                .sort({ createdAt: -1 })
+                .limit(MESSAGE_LIMIT);
             res.json({ success: true, messages });
         } catch (err) {
             console.log(err);
@@ -39,11 +41,9 @@ router.get(
 router.delete("/:id", async (req, res) => {
     try {
         const message = await Message.findByIdAndDelete(req.params.id);
-
         if (message) {
             await redisClient.del(`messages:channel:${message.channelId}`);
         }
-
         res.json({ success: true, message: "Message deleted" });
     } catch (err) {
         console.log(err);
@@ -59,11 +59,9 @@ router.put("/:id", async (req, res) => {
             { content, edited: true },
             { new: true }
         );
-
         if (message) {
             await redisClient.del(`messages:channel:${message.channelId}`);
         }
-
         res.json({ success: true, message });
     } catch (err) {
         console.log(err);
