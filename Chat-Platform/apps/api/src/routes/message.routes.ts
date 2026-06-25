@@ -30,7 +30,9 @@ router.get(
                 .populate("senderId", "name email")
                 .sort({ createdAt: -1 })
                 .limit(MESSAGE_LIMIT);
-            res.json({ success: true, messages });
+            // Reverse so frontend gets oldest -> newest (chronological), even
+            // though we queried newest-first to apply the limit correctly.
+            res.json({ success: true, messages: messages.reverse() });
         } catch (err) {
             console.log(err);
             res.status(500).json({ success: false });

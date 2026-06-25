@@ -23,11 +23,16 @@ export function cacheMiddleware(keyFn: (req: Request) => string) {
     const originalJson = res.json.bind(res);
     res.json = (body: any) => {
       const serialized = JSON.stringify(body);
-      if (serialized.length <= MAX_CACHE_SIZE) {
-        redisClient.setex(key, TTL, serialized).catch(console.error);
+      const isSuccess = res.statusCode < 400;
+
+      if (!isSuccess) {
+        console.log(`[Cache SKIP] ${key} — error response (status ${res.statusCode})`);
+      } else if (serialized.length > MAX_CACHE_SIZE) {
+        console.warn(`[Cache SKIP] ${key} — too large (${(serialized.length / 1024).toFixed(1)}KB)`);
       } else {
-        console.warn(`[Cache SKIP] ${key} — response too large (${(serialized.length / 1024).toFixed(1)}KB)`);
+        redisClient.setex(key, TTL, serialized).catch(console.error);
       }
+
       return originalJson(body);
     };
 
