@@ -1,133 +1,74 @@
 import { Router } from "express";
 import Message from "../models/Message.js";
+import { redisClient } from "../config/redis.js";
+import { cacheMiddleware } from "../middleware/cache.js";
 
 const router = Router();
 
-// Send Message
+const MESSAGE_LIMIT = 50;
+
 router.post("/send", async (req, res) => {
-
     try {
-
-        const {
-            senderId,
-            channelId,
-            content
-        } = req.body;
-
-        const message = new Message({
-            senderId,
-            channelId,
-            content
-        });
-
+        const { senderId, channelId, content } = req.body;
+        const message = new Message({ senderId, channelId, content });
         await message.save();
-
-        res.status(201).json({
-            success: true,
-            message
-        });
-
+        await redisClient.del(`messages:channel:${channelId}`);
+        res.status(201).json({ success: true, message });
     } catch (err) {
-
         console.log(err);
-
-        res.status(500).json({
-            success: false,
-            message: "Message sending failed"
-        });
-
+        res.status(500).json({ success: false, message: "Message sending failed" });
     }
-
 });
 
-// Get Messages of a Channel
-router.get("/channel/:channelId", async (req, res) => {
-
-    try {
-
-        const { channelId } = req.params;
-
-        const messages =
-        await Message.find({
-        channelId
-        }).populate(
-           "senderId",
-           "name email"
-        );
-
-        res.json({
-            success: true,
-            messages
-        });
-
-    } catch (err) {
-
-        console.log(err);
-
-        res.status(500).json({
-            success: false
-        });
-
+router.get(
+    "/channel/:channelId",
+    cacheMiddleware((req) => `messages:channel:${req.params.channelId}`),
+    async (req, res) => {
+        try {
+            const { channelId } = req.params;
+            const messages = await Message.find({ channelId })
+                .populate("senderId", "name email")
+                .sort({ createdAt: -1 })
+                .limit(MESSAGE_LIMIT);
+            // Reverse so frontend gets oldest -> newest (chronological), even
+            // though we queried newest-first to apply the limit correctly.
+            res.json({ success: true, messages: messages.reverse() });
+        } catch (err) {
+            console.log(err);
+            res.status(500).json({ success: false });
+        }
     }
-
-});
+);
 
 router.delete("/:id", async (req, res) => {
-
     try {
-
-        await Message.findByIdAndDelete(
-            req.params.id
-        );
-
-        res.json({
-            success: true,
-            message: "Message deleted"
-        });
-
+        const message = await Message.findByIdAndDelete(req.params.id);
+        if (message) {
+            await redisClient.del(`messages:channel:${message.channelId}`);
+        }
+        res.json({ success: true, message: "Message deleted" });
     } catch (err) {
-
         console.log(err);
-
-        res.status(500).json({
-            success: false
-        });
-
+        res.status(500).json({ success: false });
     }
-
 });
 
 router.put("/:id", async (req, res) => {
-
     try {
-
         const { content } = req.body;
-
-        const message =
-            await Message.findByIdAndUpdate(
-                req.params.id,
-                {
-                    content,
-                    edited: true
-                },
-                { new: true }
-            );
-
-        res.json({
-            success: true,
-            message
-        });
-
+        const message = await Message.findByIdAndUpdate(
+            req.params.id,
+            { content, edited: true },
+            { new: true }
+        );
+        if (message) {
+            await redisClient.del(`messages:channel:${message.channelId}`);
+        }
+        res.json({ success: true, message });
     } catch (err) {
-
         console.log(err);
-
-        res.status(500).json({
-            success: false
-        });
-
+        res.status(500).json({ success: false });
     }
-
 });
 
 export default router;
