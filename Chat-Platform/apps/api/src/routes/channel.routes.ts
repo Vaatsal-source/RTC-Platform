@@ -1,52 +1,79 @@
 import { Router } from "express";
 import Channel from "../models/Channel.js";
+import Workspace from "../models/Workspace.js";
 import { redisClient } from "../config/redis.js";
 import { cacheMiddleware } from "../middleware/cache.js";
+import { requireAuth, type AuthRequest } from "../middleware/auth.js";
+import { validate, createChannelSchema } from "../middleware/validate.js";
 
 const router = Router();
 
-router.post("/create", async (req, res) => {
+router.post("/create", requireAuth, validate(createChannelSchema), async (req: AuthRequest, res) => {
     try {
         const { name, workspaceId, isPrivate } = req.body;
+
+        const workspace = await Workspace.findById(workspaceId);
+        if (!workspace) {
+            return res.status(404).json({ success: false, message: "Workspace not found" });
+        }
+
+        const requesterId = req.user!.userId;
+        const isMember = workspace.members.some((m: any) => m.userId.toString() === requesterId);
+        const isOwner = workspace.ownerId.toString() === requesterId;
+
+        if (!isOwner && !isMember) {
+            return res.status(403).json({ success: false, message: "You are not a member of this workspace" });
+        }
+
         const channel = new Channel({ name, workspaceId, isPrivate });
         await channel.save();
-
-        // Invalidate channels list for this workspace
         await redisClient.del(`channels:workspace:${workspaceId}`);
 
         res.status(201).json({ success: true, channel });
     } catch (err) {
-        console.log(err);
+        console.error(err);
         res.status(500).json({ success: false, message: "Channel creation failed" });
     }
 });
 
-router.get(
-    "/workspace/:workspaceId",
-    cacheMiddleware((req) => `channels:workspace:${req.params.workspaceId}`),
-    async (req, res) => {
-        try {
-            const { workspaceId } = req.params;
-            const channels = await Channel.find({ workspaceId });
-            res.json({ success: true, channels });
-        } catch (err) {
-            console.log(err);
-            res.status(500).json({ success: false });
-        }
-    }
-);
-
-router.delete("/:id", async (req, res) => {
+router.get("/workspace/:workspaceId", requireAuth, cacheMiddleware((req) => `channels:workspace:${req.params.workspaceId}`), async (req, res) => {
     try {
-        const channel = await Channel.findByIdAndDelete(req.params.id);
+        const channels = await Channel.find({ workspaceId: req.params.workspaceId });
+        res.json({ success: true, channels });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false });
+    }
+});
 
-        if (channel) {
-            await redisClient.del(`channels:workspace:${channel.workspaceId}`);
+router.delete("/:id", requireAuth, async (req: AuthRequest, res) => {
+    try {
+        const channel = await Channel.findById(req.params.id);
+        if (!channel) {
+            return res.status(404).json({ success: false, message: "Channel not found" });
         }
+
+        const workspace = await Workspace.findById(channel.workspaceId);
+        if (!workspace) {
+            return res.status(404).json({ success: false, message: "Workspace not found" });
+        }
+
+        const requesterId = req.user!.userId;
+        const isOwner = workspace.ownerId.toString() === requesterId;
+        const isAdmin = workspace.members.some(
+            (m: any) => m.userId.toString() === requesterId && m.role === 'admin'
+        );
+
+        if (!isOwner && !isAdmin) {
+            return res.status(403).json({ success: false, message: "Only workspace owner or admin can delete channels" });
+        }
+
+        await Channel.findByIdAndDelete(req.params.id);
+        await redisClient.del(`channels:workspace:${channel.workspaceId}`);
 
         res.json({ success: true, message: "Channel deleted" });
     } catch (err) {
-        console.log(err);
+        console.error(err);
         res.status(500).json({ success: false });
     }
 });
