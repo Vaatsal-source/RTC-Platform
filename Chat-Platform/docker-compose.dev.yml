@@ -1,0 +1,19 @@
+# docker-compose.dev.yml (in root of project)
+version: '3.9'
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: dev_redis
+    ports:
+      - "6379:6379"
+
+  redis-commander:
+    image: rediscommander/redis-commander
+    container_name: dev_redis_ui
+    ports:
+      - "8081:8081"
+    environment:
+      - REDIS_HOSTS=local:redis:6379
+    depends_on:
+      - redis
