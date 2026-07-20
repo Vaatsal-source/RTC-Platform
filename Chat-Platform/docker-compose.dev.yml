@@ -1,4 +1,3 @@
-# docker-compose.dev.yml (in root of project)
 version: '3.9'
 
 services:
@@ -7,6 +6,11 @@ services:
     container_name: dev_redis
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   redis-commander:
     image: rediscommander/redis-commander
@@ -17,3 +21,18 @@ services:
       - REDIS_HOSTS=local:redis:6379
     depends_on:
       - redis
+
+  worker:
+    build:
+      context: .
+      dockerfile: apps/worker/Dockerfile
+    container_name: dev_worker
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    volumes:
+      - ./apps/worker/src:/app/apps/worker/src
+      - ./packages/queue/src:/app/packages/queue/src
+    depends_on:
+      redis:
+        condition: service_healthy

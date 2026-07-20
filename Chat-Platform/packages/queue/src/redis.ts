@@ -5,7 +5,7 @@ export const connection = {
   port: Number(process.env.REDIS_PORT) || 6379,
 };
 
-// Only needed if you want raw redis access
+// Only needed if want raw redis access
 export const redisClient = new Redis(connection);
 
 redisClient.on('error', (err) => console.error('[Queue Redis Error]', err));
