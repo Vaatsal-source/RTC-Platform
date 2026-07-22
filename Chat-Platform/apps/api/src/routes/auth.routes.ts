@@ -5,8 +5,9 @@ import User from "../models/User.js";
 import { redisClient } from "../config/redis.js";
 import { validate, registerSchema, loginSchema } from "../middleware/validate.js";
 import { requireAuth, type AuthRequest } from "../middleware/auth.js";
+import { enqueueAudit, enqueueEmail } from "../lib/queues.js";
 
-const router = Router();
+const router: Router = Router();
 const JWT_SECRET = process.env.JWT_SECRET || 'dev_secret_change_in_prod';
 const JWT_EXPIRES_IN = '7d';
 
@@ -25,6 +26,13 @@ router.post("/register", validate(registerSchema), async (req, res) => {
             JWT_SECRET,
             { expiresIn: JWT_EXPIRES_IN }
         );
+        void enqueueAudit("user_registered", user._id.toString(), { email, name });
+        void enqueueEmail("welcome_email", {
+            to: email,
+            subject: "Welcome to SyncGrid",
+            body: `Hi ${name}, your account has been created successfully.`,
+            userId: user._id.toString(),
+        });
         res.status(201).json({
             success: true,
             token,
@@ -52,6 +60,7 @@ router.post("/login", validate(loginSchema), async (req, res) => {
             JWT_SECRET,
             { expiresIn: JWT_EXPIRES_IN }
         );
+        void enqueueAudit("user_logged_in", user._id.toString(), { email });
         res.json({
             success: true,
             token,
@@ -73,6 +82,7 @@ router.post("/logout", requireAuth, async (req: AuthRequest, res) => {
         if (ttl > 0) {
             await redisClient.setex(`blacklist:${token}`, ttl, '1');
         }
+        void enqueueAudit("user_logged_out", req.user!.userId, { email: req.user!.email });
         res.json({ success: true, message: "Logged out successfully" });
     } catch (err) {
         console.error(err);

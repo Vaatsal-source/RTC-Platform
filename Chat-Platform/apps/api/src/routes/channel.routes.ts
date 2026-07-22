@@ -5,8 +5,9 @@ import { redisClient } from "../config/redis.js";
 import { cacheMiddleware } from "../middleware/cache.js";
 import { requireAuth, type AuthRequest } from "../middleware/auth.js";
 import { validate, createChannelSchema } from "../middleware/validate.js";
+import { enqueueAudit } from "../lib/queues.js";
 
-const router = Router();
+const router: Router = Router();
 
 router.post("/create", requireAuth, validate(createChannelSchema), async (req: AuthRequest, res) => {
     try {
@@ -28,6 +29,12 @@ router.post("/create", requireAuth, validate(createChannelSchema), async (req: A
         const channel = new Channel({ name, workspaceId, isPrivate });
         await channel.save();
         await redisClient.del(`channels:workspace:${workspaceId}`);
+        void enqueueAudit("channel_created", requesterId, {
+            workspaceId,
+            channelId: channel._id.toString(),
+            name,
+            isPrivate: Boolean(isPrivate),
+        });
 
         res.status(201).json({ success: true, channel });
     } catch (err) {
@@ -70,6 +77,11 @@ router.delete("/:id", requireAuth, async (req: AuthRequest, res) => {
 
         await Channel.findByIdAndDelete(req.params.id);
         await redisClient.del(`channels:workspace:${channel.workspaceId}`);
+        void enqueueAudit("channel_deleted", requesterId, {
+            workspaceId: channel.workspaceId.toString(),
+            channelId: req.params.id,
+            name: channel.name,
+        });
 
         res.json({ success: true, message: "Channel deleted" });
     } catch (err) {
