@@ -42,3 +42,5 @@ export async function disconnectDB(): Promise<void> {
 // import { connectDB, Message, Channel } from 'database';
 export * from './models/message.js';
 export * from './models/channel.js';
+export * from './models/notification.js';
+export * from './models/auditLog.js';
