@@ -1,11 +1,13 @@
 import { Router } from "express";
 import Workspace from "../models/Workspace.js";
+import User from "../models/User.js";
 import { redisClient } from "../config/redis.js";
 import { cacheMiddleware } from "../middleware/cache.js";
 import { requireAuth, type AuthRequest } from "../middleware/auth.js";
 import { validate, createWorkspaceSchema, addMemberSchema } from "../middleware/validate.js";
+import { enqueueAudit, enqueueEmail, enqueueNotification } from "../lib/queues.js";
 
-const router = Router();
+const router: Router = Router();
 
 router.post("/create", requireAuth, validate(createWorkspaceSchema), async (req: AuthRequest, res) => {
     try {
@@ -15,6 +17,10 @@ router.post("/create", requireAuth, validate(createWorkspaceSchema), async (req:
         const workspace = new Workspace({ name, description, ownerId });
         await workspace.save();
         await redisClient.del("workspaces:all");
+        void enqueueAudit("workspace_created", ownerId, {
+            workspaceId: workspace._id.toString(),
+            name,
+        });
 
         res.status(201).json({ success: true, workspace });
     } catch (err) {
@@ -62,6 +68,28 @@ router.post("/add-member", requireAuth, validate(addMemberSchema), async (req: A
 
         await redisClient.del(`workspace:${workspaceId}`);
         await redisClient.del(`workspace:${workspaceId}:members`);
+
+        const invitedUser = await User.findById(userId).select("name email");
+        if (invitedUser) {
+            void enqueueNotification("workspace_invite", {
+                userId,
+                message: `You were added to workspace ${workspace.name}`,
+                type: "invite",
+                senderId: requesterId,
+            });
+
+            void enqueueEmail("workspace_invite_email", {
+                to: invitedUser.email,
+                subject: `You were added to ${workspace.name}`,
+                body: `Hi ${invitedUser.name}, you were added to the workspace ${workspace.name}.`,
+                userId,
+            });
+        }
+
+        void enqueueAudit("workspace_member_added", requesterId, {
+            workspaceId,
+            invitedUserId: userId,
+        });
 
         res.json({ success: true, workspace });
     } catch (err) {
@@ -111,6 +139,10 @@ router.delete("/:id", requireAuth, async (req: AuthRequest, res) => {
         await redisClient.del(`workspace:${req.params.id}`);
         await redisClient.del(`workspace:${req.params.id}:members`);
         await redisClient.del("workspaces:all");
+        void enqueueAudit("workspace_deleted", req.user!.userId, {
+            workspaceId: req.params.id,
+            name: workspace.name,
+        });
 
         res.json({ success: true, message: "Workspace deleted" });
     } catch (err) {

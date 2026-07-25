@@ -1,11 +1,14 @@
 import { Router } from "express";
 import Message from "../models/Message.js";
+import Channel from "../models/Channel.js";
+import Workspace from "../models/Workspace.js";
 import { redisClient } from "../config/redis.js";
 import { cacheMiddleware } from "../middleware/cache.js";
 import { requireAuth, type AuthRequest } from "../middleware/auth.js";
 import { validate, sendMessageSchema, editMessageSchema } from "../middleware/validate.js";
+import { enqueueAudit, enqueueNotification } from "../lib/queues.js";
 
-const router = Router();
+const router: Router = Router();
 
 const MESSAGE_LIMIT = 50;
 
@@ -17,6 +20,37 @@ router.post("/send", requireAuth, validate(sendMessageSchema), async (req: AuthR
         const message = new Message({ senderId, channelId, content });
         await message.save();
         await redisClient.del(`messages:channel:${channelId}`);
+
+        const channel = await Channel.findById(channelId);
+        if (channel) {
+            const workspace = await Workspace.findById(channel.workspaceId).select("ownerId members name");
+            if (workspace) {
+                const recipientIds = new Set<string>();
+                recipientIds.add(workspace.ownerId.toString());
+
+                for (const member of workspace.members as Array<{ userId: { toString(): string } }>) {
+                    recipientIds.add(member.userId.toString());
+                }
+
+                recipientIds.delete(senderId);
+
+                for (const userId of recipientIds) {
+                    void enqueueNotification("channel_message", {
+                        userId,
+                        message: `New message in #${channel.name}`,
+                        type: "message",
+                        channelId,
+                        senderId,
+                    });
+                }
+            }
+        }
+
+        void enqueueAudit("message_sent", senderId, {
+            channelId,
+            messageId: message._id.toString(),
+            contentLength: content.length,
+        });
 
         res.status(201).json({ success: true, message });
     } catch (err) {
@@ -54,6 +88,10 @@ router.put("/:id", requireAuth, validate(editMessageSchema), async (req: AuthReq
         message.edited = true;
         await message.save();
         await redisClient.del(`messages:channel:${message.channelId}`);
+        void enqueueAudit("message_edited", req.user!.userId, {
+            channelId: message.channelId.toString(),
+            messageId: message._id.toString(),
+        });
 
         res.json({ success: true, message });
     } catch (err) {
@@ -75,6 +113,10 @@ router.delete("/:id", requireAuth, async (req: AuthRequest, res) => {
 
         await Message.findByIdAndDelete(req.params.id);
         await redisClient.del(`messages:channel:${message.channelId}`);
+        void enqueueAudit("message_deleted", req.user!.userId, {
+            channelId: message.channelId.toString(),
+            messageId: message._id.toString(),
+        });
 
         res.json({ success: true, message: "Message deleted" });
     } catch (err) {
