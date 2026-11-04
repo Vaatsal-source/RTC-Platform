@@ -222,9 +222,13 @@ async function main() {
   check('auto-timeout after 3s', !!t0);
 
   section('History & infinite scroll');
-  for (let i = 0; i < 55; i++) A.send('SEND_MESSAGE', { channelId: general.id, content: `bulk ${i}` });
-  // Messages are written concurrently, so poll until all 55 are stored rather than sleeping a fixed time
-  // (a slow CI runner needs well over 2.5 s).
+  // The server rate-limits each socket (burst 40, ~20 frames/s sustained), so a real client can't dump 55 frames at
+  // once — pace the sends under the limit (~16/s). Frames beyond the burst would otherwise be rejected with RATE_LIMITED.
+  for (let i = 0; i < 55; i++) {
+    A.send('SEND_MESSAGE', { channelId: general.id, content: `bulk ${i}` });
+    await sleep(60);
+  }
+  // Writes complete concurrently; poll until all 55 are stored.
   let stored = 0;
   for (let i = 0; i < 150 && stored < 55; i++) {
     const r = (await http('GET', `/channels/${general.id}/messages?limit=100`, tok.alice)).body;
@@ -242,6 +246,13 @@ async function main() {
   const rest = (await http('GET', `/channels/${general.id}/messages?limit=5`, tok.bob)).body;
   check('REST history works with limit', rest.messages.length === 5 && rest.hasMore === true);
   check('history excludes thread replies', !h2.messages.some((m: any) => m.parentMessageId));
+
+  section('Rate limiting');
+  const flood = await Client.connect('flood', WS1, tok.alice);
+  await flood.waitFor('CONNECTED');
+  for (let i = 0; i < 80; i++) flood.send('TYPING_STOP', { channelId: general.id });
+  check('flooding a socket is rejected with RATE_LIMITED', !!(await flood.waitFor('ERROR', (p) => p.code === 'RATE_LIMITED')));
+  flood.close();
 
   section('Delete (soft)');
   A.send('DELETE_MESSAGE', { channelId: general.id, messageId: msgId });
