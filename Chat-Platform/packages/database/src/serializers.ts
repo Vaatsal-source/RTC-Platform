@@ -16,8 +16,8 @@ import type { IWorkspace } from './models/workspace.js';
 
 export const oid = (v: unknown): string => String(v);
 
-export function toUserDTO(u: Pick<IUser, '_id' | 'name' | 'email'>): UserDTO {
-  return { id: oid(u._id), name: u.name, email: u.email };
+export function toUserDTO(u: Pick<IUser, '_id' | 'name' | 'email'> & Partial<Pick<IUser, 'emailVerified'>>): UserDTO {
+  return { id: oid(u._id), name: u.name, email: u.email, emailVerified: !!u.emailVerified };
 }
 
 export function toWorkspaceDTO(w: IWorkspace, myRole?: WorkspaceRole): WorkspaceDTO {

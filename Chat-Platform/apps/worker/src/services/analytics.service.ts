@@ -7,22 +7,26 @@ client.collectDefaultMetrics({ register: registry, prefix: 'worker_' });
 
 const eventsTotal = new client.Counter({ name: 'worker_events_total', help: 'Domain events seen', labelNames: ['type'] as const, registers: [registry] });
 
+const TTL = 60 * 60 * 24 * 30;
 const day = () => new Date().toISOString().slice(0, 10);
 
-// Analytics Service — cheap rollups in Redis (messages per channel per day, active posters).
-// Reads are `HGETALL analytics:messages:<date>` / `SCARD analytics:posters:<date>`.
+// Analytics Service — cheap per-workspace rollups in Redis (messages per channel per day, distinct posters).
+// Read by GET /api/workspaces/:id/analytics (admins), shown in Workspace settings → Insights.
 export function registerAnalyticsService(events: EventSubscriber): void {
   events.on('message-created', async (e) => {
     eventsTotal.inc({ type: e.type });
+    if (!e.workspaceId || e.parentMessageId) return; // DMs aren't workspace-scoped; replies would double count
     if (!(await claim('analytics', e.messageId))) return;
     const redis = getRedis();
     const d = day();
+    const msgKey = `analytics:ws:${e.workspaceId}:messages:${d}`;
+    const posterKey = `analytics:ws:${e.workspaceId}:posters:${d}`;
     await redis
       .multi()
-      .hincrby(`analytics:messages:${d}`, e.channelId, 1)
-      .expire(`analytics:messages:${d}`, 60 * 60 * 24 * 30)
-      .sadd(`analytics:posters:${d}`, e.authorId)
-      .expire(`analytics:posters:${d}`, 60 * 60 * 24 * 30)
+      .hincrby(msgKey, e.channelId, 1)
+      .expire(msgKey, TTL)
+      .sadd(posterKey, e.authorId)
+      .expire(posterKey, TTL)
       .exec();
   });
 

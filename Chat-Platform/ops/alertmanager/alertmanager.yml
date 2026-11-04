@@ -1,0 +1,17 @@
+# Routes Prometheus alerts to a Discord channel (free). Setup:
+#   1. Discord → channel settings → Integrations → Webhooks → copy the URL
+#   2. save it (just the URL) in ops/alertmanager/discord_webhook_url   (git-ignored; see discord_webhook_url.example)
+#   3. docker compose --profile observability --profile alerts up -d
+# Prefer email or Slack? Swap the receiver for email_configs / slack_configs (each supports *_file secrets).
+route:
+  receiver: discord
+  group_by: [alertname, job]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+receivers:
+  - name: discord
+    discord_configs:
+      - webhook_url_file: /etc/alertmanager/discord_webhook_url
+        send_resolved: true

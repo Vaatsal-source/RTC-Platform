@@ -9,6 +9,7 @@ export interface UserDTO {
   id: string;
   name: string;
   email: string;
+  emailVerified: boolean;
 }
 
 export interface UserSummary {
@@ -109,3 +110,24 @@ export interface SearchResultDTO {
 
 export const MESSAGE_PAGE_SIZE = 50;
 export const MAX_MESSAGE_LENGTH = 4000;
+
+export interface PendingInviteDTO {
+  id: string;
+  email: string;
+  invitedBy: string;
+  createdAt: string;
+}
+
+export interface AuditEntryDTO {
+  id: string;
+  action: string;
+  user: { id: string; name: string };
+  metadata: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface AnalyticsDTO {
+  days: Array<{ date: string; messages: number; activeUsers: number }>;
+  topChannels: Array<{ channelId: string; name: string; messages: number }>;
+  totals: { messages: number; members: number; channels: number };
+}

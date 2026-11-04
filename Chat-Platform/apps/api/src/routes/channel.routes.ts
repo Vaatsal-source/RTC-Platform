@@ -49,7 +49,7 @@ router.patch('/:id', validate(renameChannelSchema), async (req, res) => {
   const updated = await Channel.findByIdAndUpdate(channel._id, { name: req.body.name }, { new: true }).lean();
   if (!updated) throw notFound('Channel not found');
   notifyChange(updated, 'renamed');
-  void enqueueAudit('channel_renamed', user.userId, { channelId: param(req, 'id'), name: req.body.name });
+  void enqueueAudit('channel_renamed', user.userId, { workspaceId: String(channel.workspaceId), channelId: param(req, 'id'), name: req.body.name });
   res.json({ success: true, channel: toChannelDTO(updated) });
 });
 
@@ -61,7 +61,7 @@ for (const [path, archived] of [['archive', true], ['unarchive', false]] as cons
     const updated = await Channel.findByIdAndUpdate(channel._id, { isArchived: archived }, { new: true }).lean();
     if (!updated) throw notFound('Channel not found');
     notifyChange(updated, archived ? 'archived' : 'unarchived');
-    void enqueueAudit(archived ? 'channel_archived' : 'channel_unarchived', user.userId, { channelId: param(req, 'id') });
+    void enqueueAudit(archived ? 'channel_archived' : 'channel_unarchived', user.userId, { workspaceId: String(channel.workspaceId), channelId: param(req, 'id') });
     res.json({ success: true, channel: toChannelDTO(updated) });
   });
 }
@@ -74,7 +74,7 @@ router.delete('/:id', async (req, res) => {
 
   await deleteChannelCascade(channel);
   notifyChange(channel, 'deleted');
-  void enqueueAudit('channel_deleted', user.userId, { channelId: param(req, 'id'), name: channel.name });
+  void enqueueAudit('channel_deleted', user.userId, { workspaceId: String(channel.workspaceId), channelId: param(req, 'id'), name: channel.name });
   res.json({ success: true, message: 'Channel deleted' });
 });
 
@@ -105,7 +105,7 @@ router.post('/:id/members', validate(channelMemberSchema), async (req, res) => {
       change: 'created',
     });
   }
-  void enqueueAudit('channel_member_added', user.userId, { channelId: param(req, 'id'), userId: req.body.userId });
+  void enqueueAudit('channel_member_added', user.userId, { workspaceId: String(channel.workspaceId), channelId: param(req, 'id'), userId: req.body.userId });
   res.json({ success: true, channel: updated ? toChannelDTO(updated) : undefined });
 });
 
@@ -124,7 +124,7 @@ router.delete('/:id/members/:userId', async (req, res) => {
     workspaceId: channel.workspaceId ? String(channel.workspaceId) : null,
     change: 'deleted',
   });
-  void enqueueAudit('channel_member_removed', user.userId, { channelId: param(req, 'id'), userId: param(req, 'userId') });
+  void enqueueAudit('channel_member_removed', user.userId, { workspaceId: String(channel.workspaceId), channelId: param(req, 'id'), userId: param(req, 'userId') });
   res.json({ success: true });
 });
 

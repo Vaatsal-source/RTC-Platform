@@ -49,6 +49,9 @@ Subscriptions are manual (`Map<channelId, Set<socket>>`); they're kept in step w
 | `presence:sockets:<userId>` | set of `<instance>:<socket>`, TTL 90 s | multi-tab/instance: offline only when the set empties; TTLs heal crashed instances |
 | `channel:<id>:members` | set, TTL 5 min | who may see/post in a channel — hot path of every WS frame |
 | `blacklist:<jwt>` | string, TTL = token remainder | logout revocation |
+| `refresh:<sha>` · `pwreset:<sha>` · `verify:<sha>` | string → userId, TTL 30 d / 1 h / 24 h | opaque single-use tokens (only hashes stored) |
+| `user-refresh:<userId>` · `session-valid-after:<userId>` | set · unix seconds | revoke all of a user's sessions |
+| `analytics:ws:<workspaceId>:messages:<date>` · `…:posters:<date>` | hash · set (30 d) | per-workspace rollups behind the Insights tab |
 | `evt:<service>:<key>` | string NX, TTL 1 h | claim an event so one worker replica handles it |
 | `analytics:messages:<date>`, `analytics:posters:<date>` | hash / set | cheap rollups |
 | `ws:broadcast` | pub/sub | client-bound frames across WS instances |
@@ -62,10 +65,11 @@ Text indexes on message content, user name/email and channel name power search. 
 
 ## Security model
 
-* **JWT** (HS256) verified on every REST call and on WS upgrade; logout blacklists the token. Production refuses to boot with a weak `JWT_SECRET`.
+* **Sessions:** a 1 h JWT (HS256) is verified on every REST call and WS upgrade, plus an opaque **refresh token** (30 d, stored only as a SHA-256 in Redis, single-use and rotated on every refresh). Logout blacklists the access token and deletes the refresh token. A password reset writes `session-valid-after:<user>` so every older access token, refresh token and WebSocket is rejected. Production refuses to boot with a weak or placeholder `JWT_SECRET`.
+* **Account recovery:** reset/verify tokens are random, hashed at rest, single-use (atomic `GETDEL`) and expire (1 h / 24 h); `forgot-password` always answers 200. Invitations to addresses without an account are only redeemed once the address is **verified**.
 * **Tenant isolation:** workspace/channel membership is checked for every read and write; non-members get *404* (existence isn't revealed). Search, activity and file downloads honour the same rules.
 * **Input validation:** zod on every REST body/query and on every WS frame; WS frames are size-capped (64 KB) and rate-limited per socket.
-* **Files:** random on-disk names, size limit, access-checked downloads; only raster images render inline — everything else (HTML, SVG…) is served as an attachment with `nosniff` and a sandbox CSP.
+* **Files:** random storage keys, size limit, access-checked downloads (local disk or S3-compatible bucket); only raster images render inline — everything else (HTML, SVG…) is served as an attachment with `nosniff` and a sandbox CSP.
 * **Passwords:** bcrypt; identical response for unknown email vs. wrong password; login/register rate-limited.
 * **Browser:** helmet headers, CORS allow-list (also applied to WS `Origin`), message content rendered via React (escaped), mentions only styled when they resolve to real members.
 

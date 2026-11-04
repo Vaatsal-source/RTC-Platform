@@ -15,6 +15,7 @@ import { SearchModal } from './shell/SearchModal';
 import { NotificationsMenu } from './shell/NotificationsMenu';
 import { ThreadPanel } from './chat/ThreadPanel';
 import { Spinner } from './ui';
+import { VerifyBanner } from './shell/VerifyBanner';
 
 type ModalState =
   | { kind: 'createWorkspace' }
@@ -123,7 +124,9 @@ export default function Shell() {
   if (workspacesQ.isLoading) return <div className="flex h-screen items-center justify-center bg-[#313338]"><Spinner label="Loading your workspaces…" /></div>;
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-[#313338] text-gray-200 antialiased">
+    <div className="flex h-screen w-screen flex-col overflow-hidden bg-[#313338] text-gray-200 antialiased">
+      <VerifyBanner />
+      <div className="flex min-h-0 flex-1">
       <WorkspaceRail
         workspaces={workspaces}
         activeId={workspace?.id ?? null}
@@ -185,6 +188,8 @@ export default function Shell() {
       ) : (
         workspace && activeChannel?.kind !== 'dm' && <RightPanel workspaceId={workspace.id} members={members} />
       )}
+
+      </div>
 
       {modal?.kind === 'createWorkspace' && <CreateWorkspaceModal onClose={closeModal} />}
       {modal?.kind === 'join' && <JoinWorkspaceModal initialCode={modal.code} onClose={closeModal} />}

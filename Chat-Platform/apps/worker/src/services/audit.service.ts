@@ -7,6 +7,7 @@ export function registerAuditService(events: EventSubscriber): void {
   events.on('message-created', async (e) => {
     if (!(await claim('audit', e.messageId))) return;
     await enqueueAudit(e.parentMessageId ? 'thread_reply_sent' : 'message_sent', e.authorId, {
+      workspaceId: e.workspaceId ?? undefined,
       channelId: e.channelId,
       messageId: e.messageId,
       contentLength: e.content.length,

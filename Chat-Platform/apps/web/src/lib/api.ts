@@ -1,6 +1,9 @@
-import axios, { AxiosError } from 'axios';
+import axios, { AxiosError, type InternalAxiosRequestConfig } from 'axios';
 import type {
   ActivityDTO,
+  AnalyticsDTO,
+  AuditEntryDTO,
+  PendingInviteDTO,
   ChannelDTO,
   FileDTO,
   MessageDTO,
@@ -11,28 +14,70 @@ import type {
   WorkspaceMemberDTO,
   WorkspaceRole,
 } from '@repo/shared-types';
+import { getRefreshToken, getToken, saveTokens } from './session';
 
-export const API_URL: string = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
-export const WS_URL: string = import.meta.env.VITE_WS_URL || 'ws://localhost:8080';
+export const API_URL: string = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:5000/api' : '/api');
+// Production default: same origin behind the reverse proxy (wss://<host>/ws). Dev: the WS server directly.
+// A relative value such as "/ws" is resolved against the page's origin (ws:// or wss:// to match http/https).
+const sameOriginWs = (path: string) => `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}${path}`;
+const configuredWs: string = import.meta.env.VITE_WS_URL || '';
+export const WS_URL: string = configuredWs.startsWith('/') ? sameOriginWs(configuredWs) : configuredWs || (import.meta.env.DEV ? 'ws://localhost:8080' : sameOriginWs('/ws'));
 
-export const TOKEN_KEY = 'token';
 export const AUTH_EXPIRED_EVENT = 'auth:expired';
+export const TOKENS_REFRESHED_EVENT = 'auth:tokens';
 
 export const api = axios.create({ baseURL: API_URL, headers: { 'Content-Type': 'application/json' } });
 
 api.interceptors.request.use((config) => {
-  const token = localStorage.getItem(TOKEN_KEY);
+  const token = getToken();
   if (token) config.headers.Authorization = `Bearer ${token}`;
   return config;
 });
 
+// ── Silent token refresh ─────────────────────────────────────────────────────
+// Access tokens last 1 h. On a 401 we trade the single-use refresh token for a new pair and replay the request.
+// Concurrent 401s share ONE refresh call (the refresh token can only be used once).
+let refreshing: Promise<string | null> | null = null;
+
+async function refreshSession(): Promise<string | null> {
+  const used = getRefreshToken();
+  if (!used) return null;
+  try {
+    const res = await axios.post<{ token: string; refreshToken: string }>(`${API_URL}/auth/refresh`, { refreshToken: used });
+    saveTokens(res.data.token, res.data.refreshToken);
+    window.dispatchEvent(new CustomEvent(TOKENS_REFRESHED_EVENT, { detail: res.data }));
+    return res.data.token;
+  } catch {
+    // Another tab may have rotated the token a moment ago — if the stored one changed, use that session.
+    return getRefreshToken() !== used ? getToken() : null;
+  }
+}
+
+/** Resolves to a fresh access token, or null if the session can't be renewed. */
+export function ensureFreshToken(): Promise<string | null> {
+  return (refreshing ??= refreshSession().finally(() => {
+    refreshing = null;
+  }));
+}
+
+type Retryable = InternalAxiosRequestConfig & { _retried?: boolean };
+
 api.interceptors.response.use(
   (r) => r,
-  (error: AxiosError) => {
-    // A 401 on anything except the credential endpoints means the session is gone.
-    const url = error.config?.url ?? '';
-    if (error.response?.status === 401 && !url.startsWith('/auth/login') && !url.startsWith('/auth/register')) {
-      window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
+  async (error: AxiosError) => {
+    const config = error.config as Retryable | undefined;
+    const url = config?.url ?? '';
+    const isCredentialCall = /^\/auth\/(login|register|refresh|forgot-password|reset-password|verify-email)/.test(url);
+    if (error.response?.status === 401 && config && !isCredentialCall) {
+      if (!config._retried) {
+        const token = await ensureFreshToken();
+        if (token) {
+          config._retried = true;
+          config.headers.Authorization = `Bearer ${token}`;
+          return api(config);
+        }
+      }
+      window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT)); // can't renew → logged out
     }
     return Promise.reject(error);
   },
@@ -48,6 +93,7 @@ const data = <T>(p: Promise<{ data: T }>): Promise<T> => p.then((r) => r.data);
 
 export interface AuthResult {
   token: string;
+  refreshToken: string;
   user: UserDTO;
 }
 
@@ -56,7 +102,11 @@ export const Api = {
   register: (b: { name: string; email: string; password: string }) => data<AuthResult>(api.post('/auth/register', b)),
   login: (b: { email: string; password: string }) => data<AuthResult>(api.post('/auth/login', b)),
   me: () => data<{ user: UserDTO }>(api.get('/auth/me')).then((r) => r.user),
-  logout: () => api.post('/auth/logout').catch(() => undefined),
+  logout: () => api.post('/auth/logout', { refreshToken: getRefreshToken() }).catch(() => undefined),
+  forgotPassword: (email: string) => api.post('/auth/forgot-password', { email }),
+  resetPassword: (token: string, password: string) => api.post('/auth/reset-password', { token, password }),
+  verifyEmail: (token: string) => data<{ user: UserDTO; joinedWorkspaces: number }>(api.post('/auth/verify-email', { token })),
+  resendVerification: () => api.post('/auth/resend-verification'),
 
   // ── Workspaces ──
   workspaces: () => data<{ workspaces: WorkspaceDTO[] }>(api.get('/workspaces')).then((r) => r.workspaces),
@@ -66,7 +116,12 @@ export const Api = {
   joinWorkspace: (code: string) => data<{ workspace: WorkspaceDTO }>(api.post('/workspaces/join', { code })).then((r) => r.workspace),
   rotateInvite: (id: string) => data<{ workspace: WorkspaceDTO }>(api.post(`/workspaces/${id}/invite-code`)).then((r) => r.workspace),
   members: (id: string) => data<{ members: WorkspaceMemberDTO[] }>(api.get(`/workspaces/${id}/members`)).then((r) => r.members),
-  inviteByEmail: (id: string, email: string) => api.post(`/workspaces/${id}/members`, { email }),
+  /** `pending: true` ⇒ no account yet; an invitation email was sent and is redeemed when they verify their address. */
+  inviteByEmail: (id: string, email: string) => data<{ pending?: boolean }>(api.post(`/workspaces/${id}/members`, { email })),
+  invites: (id: string) => data<{ invites: PendingInviteDTO[] }>(api.get(`/workspaces/${id}/invites`)).then((r) => r.invites),
+  revokeInvite: (id: string, inviteId: string) => api.delete(`/workspaces/${id}/invites/${inviteId}`),
+  audit: (id: string) => data<{ entries: AuditEntryDTO[] }>(api.get(`/workspaces/${id}/audit`, { params: { limit: 100 } })).then((r) => r.entries),
+  analytics: (id: string) => data<AnalyticsDTO>(api.get(`/workspaces/${id}/analytics`)),
   setRole: (id: string, userId: string, role: WorkspaceRole) => api.patch(`/workspaces/${id}/members/${userId}`, { role }),
   removeMember: (id: string, userId: string) => api.delete(`/workspaces/${id}/members/${userId}`),
   activity: (id: string) => data<{ activity: ActivityDTO[] }>(api.get(`/workspaces/${id}/activity`, { params: { limit: 50 } })).then((r) => r.activity),

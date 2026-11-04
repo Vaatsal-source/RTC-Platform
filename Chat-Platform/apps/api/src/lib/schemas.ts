@@ -71,3 +71,14 @@ export const notificationsQuerySchema = z.object({
 export const activityQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).optional().default(30),
 });
+
+export const refreshSchema = z.object({ refreshToken: z.string().min(10).max(200) });
+export const forgotPasswordSchema = z.object({ email: z.string().trim().toLowerCase().pipe(z.email('Invalid email')) });
+export const resetPasswordSchema = z.object({
+  token: z.string().min(10).max(200),
+  password: z.string().min(8, 'Password must be at least 8 characters').max(128),
+});
+export const verifyEmailSchema = z.object({ token: z.string().min(10).max(200) });
+export const auditQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(200).optional().default(50),
+});

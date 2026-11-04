@@ -19,6 +19,8 @@ export function createApp() {
   const app = express();
 
   app.disable('x-powered-by');
+  // Behind a reverse proxy, req.ip is the proxy unless we trust its X-Forwarded-For (needed for per-IP rate limits).
+  if (config.TRUST_PROXY > 0) app.set('trust proxy', config.TRUST_PROXY);
   // Files are fetched cross-origin by the web app, so allow that resource policy.
   app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
   app.use(cors({ origin: config.CORS_ORIGIN.split(',').map((s) => s.trim()), credentials: true }));

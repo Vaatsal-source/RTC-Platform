@@ -26,6 +26,14 @@ services:
       timeout: 3s
       retries: 5
 
+  # Local mail catcher: set SMTP_HOST=localhost SMTP_PORT=1025 and read every email the app sends at http://localhost:8025
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: syncgrid_dev_mailpit
+    ports:
+      - '1025:1025'
+      - '8025:8025'
+
   redis-commander:
     image: rediscommander/redis-commander
     container_name: syncgrid_dev_redis_ui

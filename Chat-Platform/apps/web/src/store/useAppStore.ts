@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import type { ChannelDTO, MessageDTO, NotificationDTO, UserDTO } from '@repo/shared-types';
-import { TOKEN_KEY } from '../lib/api';
+import { REFRESH_KEY, TOKEN_KEY, USER_KEY, clearSession } from '../lib/session';
 import {
   applyDeleted,
   applyEdited,
@@ -14,8 +14,6 @@ import {
   type ChannelMessages,
   type LocalMessage,
 } from './messages';
-
-const USER_KEY = 'user';
 
 function loadUser(): UserDTO | null {
   try {
@@ -38,7 +36,9 @@ interface AppState {
   // ── auth ──
   token: string | null;
   user: UserDTO | null;
-  setAuth: (token: string, user: UserDTO) => void;
+  setAuth: (token: string, refreshToken: string, user: UserDTO) => void;
+  setTokens: (token: string) => void;
+  setUser: (user: UserDTO) => void;
   clearAuth: () => void;
 
   // ── navigation / ui ──
@@ -98,14 +98,19 @@ let toastSeq = 1;
 export const useAppStore = create<AppState>((set, get) => ({
   token: localStorage.getItem(TOKEN_KEY),
   user: loadUser(),
-  setAuth: (token, user) => {
+  setAuth: (token, refreshToken, user) => {
     localStorage.setItem(TOKEN_KEY, token);
+    localStorage.setItem(REFRESH_KEY, refreshToken);
     localStorage.setItem(USER_KEY, JSON.stringify(user));
     set({ token, user });
   },
+  setTokens: (token) => set({ token }), // already persisted by the API client / another tab
+  setUser: (user) => {
+    localStorage.setItem(USER_KEY, JSON.stringify(user));
+    set({ user });
+  },
   clearAuth: () => {
-    localStorage.removeItem(TOKEN_KEY);
-    localStorage.removeItem(USER_KEY);
+    clearSession();
     // Wipe everything user-specific so a second account on the same browser starts clean.
     set({
       token: null,

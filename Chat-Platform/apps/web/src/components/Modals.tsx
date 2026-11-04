@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Copy, FolderPlus, Hash, Info, LogIn, Lock, MessageSquarePlus, RefreshCw, Settings, Trash2, UserPlus, Users as UsersIcon, X } from 'lucide-react';
+import { BarChart3, Copy, FolderPlus, Hash, Info, LogIn, Lock, Mail, ScrollText, MessageSquarePlus, RefreshCw, Settings, Trash2, UserPlus, Users as UsersIcon, X } from 'lucide-react';
 import type { ChannelDTO, WorkspaceDTO, WorkspaceMemberDTO } from '@repo/shared-types';
 import { Api, errorMessage } from '../lib/api';
 import { useAppStore } from '../store/useAppStore';
@@ -81,7 +81,11 @@ export function InviteMembersModal({ workspace, onClose }: { workspace: Workspac
 
   const invite = useMutation({
     mutationFn: () => Api.inviteByEmail(workspace.id, email.trim()),
-    onSuccess: () => { toast(`Added ${email.trim()}`, 'success'); setEmail(''); refresh(['members', workspace.id]); },
+    onSuccess: (r) => {
+      toast(r.pending ? `Invitation emailed to ${email.trim()} — they'll be added once they sign up and verify` : `Added ${email.trim()}`, 'success');
+      setEmail('');
+      refresh(['members', workspace.id], ['invites', workspace.id]);
+    },
   });
 
   return (
@@ -99,12 +103,13 @@ export function InviteMembersModal({ workspace, onClose }: { workspace: Workspac
             </div>
           </div>
           <form onSubmit={(e) => { e.preventDefault(); invite.mutate(); }}>
-            <label className={labelCls} htmlFor="invite-email">Add by email (existing account)</label>
+            <label className={labelCls} htmlFor="invite-email">Add by email</label>
             <div className="mt-1.5 flex gap-2">
               <input id="invite-email" type="email" className={inputCls} placeholder="teammate@company.com" value={email} onChange={(e) => setEmail(e.target.value)} />
               <button type="submit" disabled={!email || invite.isPending} className={primaryBtn}>Add</button>
             </div>
             {invite.isError && <div className="mt-2"><ErrorText>{errorMessage(invite.error)}</ErrorText></div>}
+            <p className="mt-1.5 text-[11px] text-[#949ba4]">Existing users are added immediately; anyone else gets an email invitation.</p>
           </form>
         </div>
       )}
@@ -112,9 +117,11 @@ export function InviteMembersModal({ workspace, onClose }: { workspace: Workspac
   );
 }
 
-// ─── Workspace settings (overview, members & roles) ──────────────────────────
+type Tab = 'overview' | 'members' | 'audit' | 'insights';
+
+// ─── Workspace settings (overview, members & roles, audit log, insights) ─────
 export function WorkspaceSettingsModal({ workspace, members, onClose }: { workspace: WorkspaceDTO; members: WorkspaceMemberDTO[]; onClose: () => void }) {
-  const [tab, setTab] = useState<'overview' | 'members'>('overview');
+  const [tab, setTab] = useState<Tab>('overview');
   const [name, setName] = useState(workspace.name);
   const [description, setDescription] = useState(workspace.description);
   const [confirm, setConfirm] = useState('');
@@ -132,16 +139,21 @@ export function WorkspaceSettingsModal({ workspace, members, onClose }: { worksp
   const destroy = useMutation({ mutationFn: () => Api.deleteWorkspace(workspace.id), onSuccess: () => { refresh(['workspaces']); setActive(null); onClose(); } });
   const leave = useMutation({ mutationFn: () => Api.removeMember(workspace.id, me), onSuccess: () => { refresh(['workspaces']); setActive(null); onClose(); }, onError: (e) => toast(errorMessage(e), 'error') });
 
-  const tabBtn = (id: 'overview' | 'members', label: string, icon: React.ReactNode) => (
+  const tabBtn = (id: Tab, label: string, icon: React.ReactNode) => (
     <button onClick={() => setTab(id)} className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs font-medium transition ${tab === id ? 'bg-[#3f4248] text-white' : 'text-[#949ba4] hover:bg-[#35373c] hover:text-[#dbdee1]'}`}>{icon}{label}</button>
   );
 
   return (
     <Modal title="Workspace settings" icon={<Settings size={18} />} onClose={onClose} wide>
       <div className="flex gap-4">
-        <div className="w-32 shrink-0 space-y-1">{tabBtn('overview', 'Overview', <Info size={14} />)}{tabBtn('members', 'Members', <UsersIcon size={14} />)}</div>
+        <div className="w-32 shrink-0 space-y-1">
+          {tabBtn('overview', 'Overview', <Info size={14} />)}
+          {tabBtn('members', 'Members', <UsersIcon size={14} />)}
+          {isAdmin && tabBtn('audit', 'Audit log', <ScrollText size={14} />)}
+          {isAdmin && tabBtn('insights', 'Insights', <BarChart3 size={14} />)}
+        </div>
         <div className="min-h-80 min-w-0 flex-1">
-          {tab === 'overview' ? (
+          {tab === 'overview' && (
             <div className="space-y-4">
               <div>
                 <label className={labelCls} htmlFor="s-name">Name</label>
@@ -177,7 +189,9 @@ export function WorkspaceSettingsModal({ workspace, members, onClose }: { worksp
                 )}
               </div>
             </div>
-          ) : (
+          )}
+
+          {tab === 'members' && (
             <div className="space-y-2">
               <label className={`${labelCls} mb-2 block`}>Members &amp; roles ({members.length})</label>
               {members.map((m) => {
@@ -203,11 +217,100 @@ export function WorkspaceSettingsModal({ workspace, members, onClose }: { worksp
                   </div>
                 );
               })}
+              {isAdmin && <PendingInvites workspaceId={workspace.id} />}
             </div>
           )}
+
+          {tab === 'audit' && isAdmin && <AuditTab workspaceId={workspace.id} />}
+          {tab === 'insights' && isAdmin && <InsightsTab workspaceId={workspace.id} />}
         </div>
       </div>
     </Modal>
+  );
+}
+
+function PendingInvites({ workspaceId }: { workspaceId: string }) {
+  const refresh = useRefresh();
+  const toast = useAppStore((s) => s.toast);
+  const q = useQuery({ queryKey: ['invites', workspaceId], queryFn: () => Api.invites(workspaceId) });
+  const revoke = useMutation({ mutationFn: (id: string) => Api.revokeInvite(workspaceId, id), onSuccess: () => refresh(['invites', workspaceId]), onError: (e) => toast(errorMessage(e), 'error') });
+  if (!q.data?.length) return null;
+  return (
+    <div className="pt-3">
+      <label className={`${labelCls} mb-2 block`}>Pending invitations ({q.data.length})</label>
+      {q.data.map((i) => (
+        <div key={i.id} className="group flex items-center justify-between rounded bg-[#2b2d31] p-2 hover:bg-[#35373c]">
+          <span className="flex min-w-0 items-center gap-2 text-sm text-[#dbdee1]"><Mail size={14} className="shrink-0 text-[#80848e]" /><span className="truncate">{i.email}</span></span>
+          <button onClick={() => revoke.mutate(i.id)} className="text-[11px] text-rose-400 opacity-0 hover:underline group-hover:opacity-100">Revoke</button>
+        </div>
+      ))}
+      <p className="mt-1.5 text-[11px] text-[#949ba4]">They join automatically once they create an account with that address and confirm it.</p>
+    </div>
+  );
+}
+
+const prettyAction = (a: string) => a.replace(/_/g, ' ');
+
+function AuditTab({ workspaceId }: { workspaceId: string }) {
+  const q = useQuery({ queryKey: ['audit', workspaceId], queryFn: () => Api.audit(workspaceId) });
+  if (q.isLoading) return <Spinner />;
+  if (q.isError) return <ErrorText>{errorMessage(q.error)}</ErrorText>;
+  return (
+    <div>
+      <label className={`${labelCls} mb-2 block`}>Audit log — latest {q.data?.length ?? 0}</label>
+      <ul className="custom-scrollbar max-h-80 space-y-1 overflow-y-auto">
+        {(q.data ?? []).map((e) => (
+          <li key={e.id} className="rounded bg-[#2b2d31] px-2.5 py-1.5 text-xs">
+            <div className="flex items-baseline justify-between gap-2">
+              <span className="font-semibold text-[#dbdee1]">{prettyAction(e.action)}</span>
+              <span className="shrink-0 text-[10px] text-gray-500">{new Date(e.createdAt).toLocaleString()}</span>
+            </div>
+            <span className="text-[#949ba4]">by {e.user.name}</span>
+          </li>
+        ))}
+        {q.data?.length === 0 && <p className="p-4 text-center text-xs text-gray-500">No activity recorded yet</p>}
+      </ul>
+    </div>
+  );
+}
+
+function InsightsTab({ workspaceId }: { workspaceId: string }) {
+  const q = useQuery({ queryKey: ['analytics', workspaceId], queryFn: () => Api.analytics(workspaceId) });
+  if (q.isLoading) return <Spinner />;
+  if (q.isError || !q.data) return <ErrorText>{errorMessage(q.error)}</ErrorText>;
+  const { days, topChannels, totals } = q.data;
+  const max = Math.max(1, ...days.map((d) => d.messages));
+  return (
+    <div className="space-y-5">
+      <div className="grid grid-cols-3 gap-2 text-center">
+        {[['Messages (7 d)', totals.messages], ['Members', totals.members], ['Channels', totals.channels]].map(([l, n]) => (
+          <div key={l as string} className="rounded bg-[#2b2d31] p-3"><div className="text-xl font-bold text-white">{n}</div><div className="text-[10px] uppercase tracking-wider text-[#949ba4]">{l}</div></div>
+        ))}
+      </div>
+      <div>
+        <label className={`${labelCls} mb-2 block`}>Messages per day</label>
+        <div className="flex h-28 items-end gap-2" role="img" aria-label="Messages per day, last 7 days">
+          {days.map((d) => (
+            <div key={d.date} className="flex flex-1 flex-col items-center gap-1" title={`${d.date}: ${d.messages} messages, ${d.activeUsers} active`}>
+              <span className="text-[10px] text-gray-400">{d.messages}</span>
+              <div className="w-full rounded-t bg-[#5865F2]" style={{ height: `${Math.max(2, (d.messages / max) * 80)}px` }} />
+              <span className="text-[9px] text-gray-500">{d.date.slice(5)}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+      <div>
+        <label className={`${labelCls} mb-2 block`}>Busiest channels</label>
+        {topChannels.length === 0 && <p className="text-xs text-gray-500">No messages yet</p>}
+        {topChannels.map((c) => (
+          <div key={c.channelId} className="mb-1.5 flex items-center gap-2 text-xs">
+            <span className="w-28 truncate text-[#dbdee1]">#{c.name}</span>
+            <div className="h-2 flex-1 rounded bg-[#1e1f22]"><div className="h-2 rounded bg-emerald-500" style={{ width: `${(c.messages / topChannels[0].messages) * 100}%` }} /></div>
+            <span className="w-8 text-right text-gray-400">{c.messages}</span>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 

@@ -122,7 +122,7 @@ export async function handleEditMessage(ws: Client, p: Payload<'EDIT_MESSAGE'>):
     newContent: updated.content,
     editedAt: updated.updatedAt.toISOString(),
   });
-  void enqueueAudit('message_edited', ws.userId, { channelId: p.channelId, messageId: p.messageId });
+  void enqueueAudit('message_edited', ws.userId, { workspaceId: ctx.channel.workspaceId ? String(ctx.channel.workspaceId) : undefined, channelId: p.channelId, messageId: p.messageId });
 }
 
 // DELETE_MESSAGE — soft delete; author, or a workspace admin moderating
@@ -141,6 +141,6 @@ export async function handleDeleteMessage(ws: Client, p: Payload<'DELETE_MESSAGE
   // Scrub content (not just flag) so deleted text doesn't linger in the database.
   await Message.updateOne({ _id: p.messageId }, { isDeleted: true, content: '', attachmentIds: [], reactions: [] });
   await broadcastToChannel(p.channelId, 'MESSAGE_DELETED', { messageId: p.messageId, channelId: p.channelId });
-  void enqueueAudit('message_deleted', ws.userId, { channelId: p.channelId, messageId: p.messageId, moderated: isAdmin });
+  void enqueueAudit('message_deleted', ws.userId, { workspaceId: ctx.channel.workspaceId ? String(ctx.channel.workspaceId) : undefined, channelId: p.channelId, messageId: p.messageId, moderated: isAdmin });
   logger.debug('message deleted', { messageId: p.messageId, by: ws.userId });
 }
