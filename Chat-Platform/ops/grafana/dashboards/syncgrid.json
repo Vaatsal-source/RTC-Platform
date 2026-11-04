@@ -1,0 +1,67 @@
+{
+  "uid": "syncgrid-overview",
+  "title": "SyncGrid — Overview",
+  "tags": ["syncgrid"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "refresh": "10s",
+  "time": { "from": "now-30m", "to": "now" },
+  "panels": [
+    {
+      "id": 1, "type": "stat", "title": "WebSocket connections",
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 5 },
+      "targets": [{ "expr": "sum(ws_connections)", "refId": "A" }]
+    },
+    {
+      "id": 2, "type": "timeseries", "title": "WebSocket frames received / s (by type)",
+      "gridPos": { "x": 6, "y": 0, "w": 10, "h": 5 },
+      "targets": [{ "expr": "sum by (type) (rate(ws_frames_received_total[1m]))", "legendFormat": "{{type}}", "refId": "A" }]
+    },
+    {
+      "id": 3, "type": "timeseries", "title": "Broadcast frames delivered / s (Redis → sockets)",
+      "gridPos": { "x": 16, "y": 0, "w": 8, "h": 5 },
+      "targets": [{ "expr": "sum by (instance) (rate(ws_broadcasts_delivered_total[1m]))", "legendFormat": "{{instance}}", "refId": "A" }]
+    },
+    {
+      "id": 4, "type": "timeseries", "title": "API requests / s by status",
+      "gridPos": { "x": 0, "y": 5, "w": 8, "h": 7 },
+      "targets": [{ "expr": "sum by (status) (rate(api_http_request_duration_seconds_count[1m]))", "legendFormat": "{{status}}", "refId": "A" }]
+    },
+    {
+      "id": 5, "type": "timeseries", "title": "API latency p95 by route",
+      "gridPos": { "x": 8, "y": 5, "w": 8, "h": 7 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [{ "expr": "histogram_quantile(0.95, sum by (le, route) (rate(api_http_request_duration_seconds_bucket[5m])))", "legendFormat": "{{route}}", "refId": "A" }]
+    },
+    {
+      "id": 6, "type": "stat", "title": "API 5xx ratio (5m)",
+      "gridPos": { "x": 16, "y": 5, "w": 8, "h": 7 },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 0.05 }] } }, "overrides": [] },
+      "targets": [{ "expr": "sum(rate(api_http_request_duration_seconds_count{status=~\"5..\"}[5m])) / clamp_min(sum(rate(api_http_request_duration_seconds_count[5m])), 1)", "refId": "A" }]
+    },
+    {
+      "id": 7, "type": "timeseries", "title": "Queue jobs by state",
+      "gridPos": { "x": 0, "y": 12, "w": 12, "h": 7 },
+      "targets": [{ "expr": "queue_jobs{state=~\"waiting|active|delayed|failed\"}", "legendFormat": "{{queue}} / {{state}}", "refId": "A" }]
+    },
+    {
+      "id": 8, "type": "timeseries", "title": "Domain events processed / s",
+      "gridPos": { "x": 12, "y": 12, "w": 12, "h": 7 },
+      "targets": [{ "expr": "sum by (type) (rate(worker_events_total[1m]))", "legendFormat": "{{type}}", "refId": "A" }]
+    },
+    {
+      "id": 9, "type": "timeseries", "title": "Redis memory & clients",
+      "gridPos": { "x": 0, "y": 19, "w": 12, "h": 7 },
+      "targets": [
+        { "expr": "redis_memory_used_bytes", "legendFormat": "memory", "refId": "A" },
+        { "expr": "redis_connected_clients", "legendFormat": "clients", "refId": "B" }
+      ]
+    },
+    {
+      "id": 10, "type": "timeseries", "title": "Process memory (RSS)",
+      "gridPos": { "x": 12, "y": 19, "w": 12, "h": 7 },
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+      "targets": [{ "expr": "{__name__=~\"(api|ws|worker)_process_resident_memory_bytes\"}", "legendFormat": "{{job}}", "refId": "A" }]
+    }
+  ]
+}

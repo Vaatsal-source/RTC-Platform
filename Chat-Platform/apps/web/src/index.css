@@ -1,1 +1,27 @@
 @import "tailwindcss";
+/* Tailwind must also scan the shared UI package, since its classes live there. */
+@source "../../../packages/ui/src";
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: #313338;
+}
+
+/* Slim dark scrollbars (used on every scrollable pane). */
+.custom-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: #1a1b1e transparent;
+}
+.custom-scrollbar::-webkit-scrollbar {
+  width: 8px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #1a1b1e;
+  border-radius: 4px;
+}

@@ -1,16 +1,28 @@
-import app from "./app.js";
-import connectDB from "./config/db.js";
+import { connectDB, disconnectDB } from '@repo/database';
+import { closeQueues, getRedis, setQueueErrorLogger } from '@repo/queue';
+import { createApp } from './app.js';
+import { config, logger } from './lib/env.js';
 
-const PORT = 5000;
+async function main() {
+  setQueueErrorLogger((msg, err) => logger.error(msg, { err: (err as Error)?.message }));
+  await connectDB(config.MONGO_URI);
+  logger.info('MongoDB connected');
 
-async function startServer() {
+  const server = createApp().listen(config.API_PORT, () => logger.info(`API listening on :${config.API_PORT}`));
 
-    await connectDB();
-
-    app.listen(PORT, () => {
-        console.log(`Server running on port ${PORT}`);
-    });
-
+  const shutdown = async (signal: string) => {
+    logger.info(`${signal} received, shutting down`);
+    server.close();
+    await closeQueues();
+    await disconnectDB();
+    getRedis().disconnect();
+    process.exit(0);
+  };
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+  process.on('SIGINT', () => void shutdown('SIGINT'));
 }
 
-startServer();
+main().catch((err) => {
+  logger.error('Failed to start API', { err: err?.stack ?? err });
+  process.exit(1);
+});

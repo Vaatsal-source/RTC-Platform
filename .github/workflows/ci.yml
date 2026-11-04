@@ -1,0 +1,129 @@
+name: CI
+
+# PR → Lint → Typecheck → Test → Build → (E2E) → Merge,   then on main: Docker build → (push)
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: Chat-Platform # the monorepo lives in a sub-folder of this git repo
+
+jobs:
+  verify:
+    name: Lint · Typecheck · Test · Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: Chat-Platform/package.json # pins pnpm via "packageManager"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: Chat-Platform/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+
+  e2e:
+    name: End-to-end (api + 2× websocket + worker)
+    runs-on: ubuntu-latest
+    needs: verify
+    services:
+      mongo:
+        image: mongo:7
+        ports: ['27017:27017']
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.adminCommand(\"ping\").ok'"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      NODE_ENV: development
+      MONGO_URI: mongodb://127.0.0.1:27017/syncgrid
+      REDIS_URL: redis://127.0.0.1:6379
+      JWT_SECRET: ci-only-secret-ci-only-secret-ci-only
+      UPLOAD_DIR: /tmp/syncgrid-uploads
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: Chat-Platform/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: Chat-Platform/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - name: Start services
+        run: |
+          mkdir -p "$UPLOAD_DIR" .logs
+          pnpm --filter @repo/api start > .logs/api.log 2>&1 &
+          pnpm --filter @repo/websocket start > .logs/ws1.log 2>&1 &
+          WS_PORT=8082 INSTANCE_ID=ws-b pnpm --filter @repo/websocket start > .logs/ws2.log 2>&1 &
+          pnpm --filter @repo/worker start > .logs/worker.log 2>&1 &
+          wait_for() {
+            for _ in $(seq 1 40); do
+              if curl -fs "$1" >/dev/null; then return 0; fi
+              sleep 1
+            done
+            echo "::error::$1 never became healthy"
+            tail -n 40 .logs/*.log
+            return 1
+          }
+          for url in http://localhost:5000/health http://localhost:8080/health http://localhost:8082/health http://localhost:9102/health; do
+            wait_for "$url"
+          done
+      - run: pnpm e2e
+      - name: Service logs
+        if: failure()
+        run: tail -n 80 .logs/*.log
+
+  # Only on merges to main (not on every PR): builds all four images once, and pushes them to GHCR
+  # when the repository variable PUSH_IMAGES is 'true'.
+  docker:
+    name: Docker images
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    needs: [verify, e2e]
+    permissions:
+      contents: read
+      packages: write
+    env:
+      PUSH: ${{ vars.PUSH_IMAGES == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Log in to GHCR
+        if: env.PUSH == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build (and optionally push) images
+        working-directory: Chat-Platform
+        run: |
+          repo="ghcr.io/$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')" # image names must be lowercase
+          build() { # name file entry
+            docker build -f "$2" --target "${4:-service}" --build-arg APP="$1" --build-arg ENTRY="$3" -t "$repo/syncgrid-$1:latest" -t "$repo/syncgrid-$1:${{ github.sha }}" .
+          }
+          build api Dockerfile src/server.ts
+          build websocket Dockerfile src/index.ts
+          build worker Dockerfile src/index.ts
+          docker build -f apps/web/Dockerfile -t "$repo/syncgrid-web:latest" -t "$repo/syncgrid-web:${{ github.sha }}" .
+          if [ "$PUSH" = "true" ]; then
+            for n in api websocket worker web; do docker push --all-tags "$repo/syncgrid-$n"; done
+          fi

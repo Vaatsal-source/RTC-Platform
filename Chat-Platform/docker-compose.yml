@@ -1,0 +1,175 @@
+# Full production-like stack:   docker compose up --build
+#   frontend → http://localhost:3000     api → :5000     websocket → :8080
+#
+# Optional profiles:
+#   --profile scale          a 2nd WebSocket instance on :8082 (proves Redis Pub/Sub fan-out)
+#   --profile observability  Prometheus :9090 + Grafana :3001 (+ Redis exporter)
+#
+# Required: JWT_SECRET (>= 32 chars) in your shell or a .env file next to this one. See .env.example.
+
+name: syncgrid
+
+x-service-env: &service-env
+  NODE_ENV: production
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  MONGO_URI: mongodb://mongodb:27017/syncgrid
+  REDIS_URL: redis://redis:6379
+  JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET (32+ random characters) in .env}
+  CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3000}
+
+x-service-build: &service-build
+  context: .
+  dockerfile: Dockerfile
+  target: service
+
+services:
+  mongodb:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ['CMD', 'mongosh', '--quiet', '--eval', "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ['redis-server', '--appendonly', 'yes'] # BullMQ jobs survive a restart
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      <<: *service-build
+      args: { APP: api, ENTRY: src/server.ts }
+    restart: unless-stopped
+    environment:
+      <<: *service-env
+      API_PORT: 5000
+      UPLOAD_DIR: /data/uploads
+      APP_URL: ${APP_URL:-http://localhost:3000}
+    ports: ['5000:5000']
+    volumes:
+      - uploads:/data/uploads
+    depends_on:
+      mongodb: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:5000/health']
+      interval: 10s
+      timeout: 3s
+      retries: 6
+
+  websocket:
+    build:
+      <<: *service-build
+      args: { APP: websocket, ENTRY: src/index.ts }
+    restart: unless-stopped
+    environment:
+      <<: *service-env
+      WS_PORT: 8080
+      INSTANCE_ID: ws-1
+    ports: ['8080:8080']
+    depends_on:
+      mongodb: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:8080/health']
+      interval: 10s
+      timeout: 3s
+      retries: 6
+
+  websocket-2:
+    profiles: [scale]
+    build:
+      <<: *service-build
+      args: { APP: websocket, ENTRY: src/index.ts }
+    restart: unless-stopped
+    environment:
+      <<: *service-env
+      WS_PORT: 8080
+      INSTANCE_ID: ws-2
+    ports: ['8082:8080']
+    depends_on:
+      mongodb: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  worker:
+    build:
+      <<: *service-build
+      args: { APP: worker, ENTRY: src/index.ts }
+    restart: unless-stopped
+    environment:
+      <<: *service-env
+      APP_URL: ${APP_URL:-http://localhost:3000}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      EMAIL_FROM: ${EMAIL_FROM:-SyncGrid <no-reply@syncgrid.local>}
+      WORKER_METRICS_PORT: 9102
+    depends_on:
+      mongodb: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:9102/health']
+      interval: 10s
+      timeout: 3s
+      retries: 6
+
+  frontend:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:5000/api}
+        VITE_WS_URL: ${VITE_WS_URL:-ws://localhost:8080}
+    restart: unless-stopped
+    ports: ['3000:80']
+    depends_on: [api, websocket]
+
+  # ── Observability (optional) ──────────────────────────────────────────────
+  prometheus:
+    profiles: [observability]
+    image: prom/prometheus:v2.55.1
+    restart: unless-stopped
+    volumes:
+      - ./ops/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./ops/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+    ports: ['9090:9090']
+    depends_on: [api, websocket, worker]
+
+  redis-exporter:
+    profiles: [observability]
+    image: oliver006/redis_exporter:v1.66.0
+    restart: unless-stopped
+    environment:
+      REDIS_ADDR: redis://redis:6379
+    depends_on:
+      redis: { condition: service_healthy }
+
+  grafana:
+    profiles: [observability]
+    image: grafana/grafana:11.3.0
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+    volumes:
+      - ./ops/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./ops/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports: ['3001:3000']
+    depends_on: [prometheus]
+
+volumes:
+  mongo_data:
+  redis_data:
+  uploads:

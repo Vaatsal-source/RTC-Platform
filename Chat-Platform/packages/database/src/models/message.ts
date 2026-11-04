@@ -1,25 +1,25 @@
-import { Schema, model, Document, Types } from 'mongoose';
+import { Schema, model, type Types } from 'mongoose';
 
-// ─── Message Model ────────────────────────────────────────────────────────────
-// Stores every chat message — channel messages, thread replies, and DMs all
-// share this schema. `channelId` doubles as the DM room ID (see dmKey() in
-// the websocket app's registry.ts) when isDM is true.
+// Channel messages, thread replies and DMs all live in this collection.
+// DMs are just messages in a Channel of kind 'dm'.
 
 export interface IReaction {
   emoji: string;
-  userIds: string[]; // userIds who reacted with this emoji
+  userIds: string[];
 }
 
-export interface IMessage extends Document<string> {
-  channelId: string;
-  authorId: string;
-  authorName: string;       // denormalized for fast rendering without a join
+export interface IMessage {
+  _id: Types.ObjectId;
+  channelId: Types.ObjectId;
+  authorId: Types.ObjectId;
+  authorName: string; // denormalised for fast rendering without a join
   content: string;
-  isDM: boolean;
-  parentMessageId?: string; // set when this is a thread reply
+  parentMessageId: Types.ObjectId | null; // set when this is a thread reply
+  attachmentIds: Types.ObjectId[];
+  mentionedUserIds: Types.ObjectId[];
   reactions: IReaction[];
-  deliveredTo: string[];    // userIds who have received it (Module 7)
-  readBy: string[];         // userIds who have read it (Module 7)
+  deliveredTo: string[]; // Module 7: Sent → Delivered → Read
+  readBy: string[];
   isEdited: boolean;
   isDeleted: boolean;
   createdAt: Date;
@@ -31,40 +31,30 @@ const ReactionSchema = new Schema<IReaction>(
     emoji: { type: String, required: true },
     userIds: { type: [String], default: [] },
   },
-  { _id: false } // no separate _id needed for each reaction subdocument
+  { _id: false },
 );
 
 const MessageSchema = new Schema<IMessage>(
   {
-    // Override Mongoose's default ObjectId _id with a plain String, since
-    // the websocket layer generates IDs via crypto.randomUUID() (not
-    // ObjectId-compatible hex strings). This MUST be declared explicitly,
-    // or Mongoose silently expects ObjectId and every save() call that
-    // passes a UUID will fail validation.
-    _id: { type: String, required: true },
-    channelId: { type: String, required: true, index: true },
-    authorId: { type: String, required: true, index: true },
+    channelId: { type: Schema.Types.ObjectId, ref: 'Channel', required: true },
+    authorId: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     authorName: { type: String, required: true },
-    content: { type: String, required: true },
-    isDM: { type: Boolean, default: false },
-    parentMessageId: { type: String, default: null, index: true },
+    content: { type: String, default: '' },
+    parentMessageId: { type: Schema.Types.ObjectId, ref: 'Message', default: null, index: true },
+    attachmentIds: { type: [Schema.Types.ObjectId], ref: 'File', default: [] },
+    mentionedUserIds: { type: [Schema.Types.ObjectId], default: [] },
     reactions: { type: [ReactionSchema], default: [] },
     deliveredTo: { type: [String], default: [] },
     readBy: { type: [String], default: [] },
     isEdited: { type: Boolean, default: false },
     isDeleted: { type: Boolean, default: false },
   },
-  {
-    timestamps: true, // adds createdAt / updatedAt automatically
-  }
+  { timestamps: true },
 );
 
-// Compound index: fetching a channel's messages in order is the most common
-// query (message history / infinite scroll — Module 4), so optimize for it.
-MessageSchema.index({ channelId: 1, createdAt: -1 });
-
-// Text index for Module 11 (Search) — lets MongoDB do full-text search
-// on message content without needing a separate search engine.
+// History / infinite scroll: newest-first by channel is the hottest query.
+MessageSchema.index({ channelId: 1, parentMessageId: 1, _id: -1 });
+// Module 11 — message search
 MessageSchema.index({ content: 'text' });
 
 export const Message = model<IMessage>('Message', MessageSchema);

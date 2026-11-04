@@ -1,126 +1,72 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
+import { Api, errorMessage } from '../lib/api';
 import { useAppStore } from '../store/useAppStore';
 
-interface AuthPageProps {
-  onBackToLanding: () => void;
-  onSuccess: () => void;
-}
+const field = 'mt-2 w-full rounded bg-[#1a1d21] p-2.5 text-sm text-gray-200 border border-transparent outline-none focus:border-indigo-500 transition';
+const label = 'block text-xs font-bold uppercase tracking-wider text-gray-400';
 
-export default function AuthPage({ onBackToLanding, onSuccess }: AuthPageProps) {
+export default function AuthPage({ onBackToLanding }: { onBackToLanding: () => void }) {
   const [isLogin, setIsLogin] = useState(true);
+  const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [username, setUsername] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const setAuth = useAppStore((s) => s.setAuth);
 
-  // Simulated login/register action until we spin up apps/api
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError('');
-
     try {
-      // Mocking JWT token issuance for frontend flow verification
-      if (email && password) {
-        localStorage.setItem('token', 'mock_jwt_token_payload');
-        onSuccess();
-      } else {
-        throw new Error('Please fill in all credentials.');
-      }
-    } catch (err: any) {
-      setError(err.message || 'Something went wrong');
+      const res = isLogin ? await Api.login({ email, password }) : await Api.register({ name, email, password });
+      setAuth(res.token, res.user); // App reacts to the token: connects the socket and renders the shell
+    } catch (err) {
+      setError(errorMessage(err, 'Authentication failed'));
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="relative flex h-screen w-screen items-center justify-center bg-[#1a1d21] px-4 select-none">
-      {/* Background abstract ambient glow */}
-      <div className="absolute top-1/4 left-1/2 h-96 w-96 -translate-x-1/2 -translate-y-1/2 rounded-full bg-indigo-600/10 blur-[128px]" />
+    <div className="relative flex h-screen w-screen items-center justify-center bg-[#1a1d21] px-4">
+      <div className="absolute left-1/2 top-1/4 h-96 w-96 -translate-x-1/2 -translate-y-1/2 rounded-full bg-indigo-600/10 blur-[128px]" />
+      <button onClick={onBackToLanding} className="absolute left-6 top-6 text-sm text-gray-400 transition hover:text-white">&larr; Back to Home</button>
 
-      {/* Back to Landing Link */}
-      <button 
-        onClick={onBackToLanding}
-        className="absolute top-6 left-6 text-sm text-gray-400 hover:text-white transition"
-      >
-        &larr; Back to Home
-      </button>
-
-      {/* Dynamic Auth Card */}
       <div className="z-10 w-full max-w-[480px] rounded-lg border border-gray-800 bg-[#22252a] p-8 shadow-2xl">
         <div className="text-center">
-          <h2 className="text-2xl font-bold text-white tracking-tight">
-            {isLogin ? 'Welcome back!' : 'Create an account'}
-          </h2>
-          <p className="mt-1.5 text-sm text-gray-400">
-            {isLogin ? "We're so excited to see you again!" : 'Join your engineering space today'}
-          </p>
+          <h2 className="text-2xl font-bold tracking-tight text-white">{isLogin ? 'Welcome back!' : 'Create an account'}</h2>
+          <p className="mt-1.5 text-sm text-gray-400">{isLogin ? "We're so excited to see you again!" : 'Join your team today'}</p>
         </div>
 
         <form onSubmit={handleSubmit} className="mt-6 space-y-4">
-          {error && (
-            <div className="rounded bg-rose-500/10 p-3 text-xs font-medium text-rose-400 border border-rose-500/20">
-              {error}
-            </div>
-          )}
+          {error && <div role="alert" className="rounded border border-rose-500/20 bg-rose-500/10 p-3 text-xs font-medium text-rose-400">{error}</div>}
 
           {!isLogin && (
             <div>
-              <label className="block text-xs font-bold uppercase tracking-wider text-gray-400">Username</label>
-              <input
-                type="text"
-                required
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                className="mt-2 w-full rounded bg-[#1a1d21] p-2.5 text-sm text-gray-200 border border-transparent outline-none focus:border-indigo-500 transition"
-              />
+              <label htmlFor="name" className={label}>Display name</label>
+              <input id="name" type="text" required minLength={2} maxLength={50} autoComplete="name" value={name} onChange={(e) => setName(e.target.value)} className={field} />
             </div>
           )}
-
           <div>
-            <label className="block text-xs font-bold uppercase tracking-wider text-gray-400">Email</label>
-            <input
-              type="email"
-              required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              className="mt-2 w-full rounded bg-[#1a1d21] p-2.5 text-sm text-gray-200 border border-transparent outline-none focus:border-indigo-500 transition"
-            />
+            <label htmlFor="email" className={label}>Email</label>
+            <input id="email" type="email" required autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} className={field} />
+          </div>
+          <div>
+            <label htmlFor="password" className={label}>Password</label>
+            <input id="password" type="password" required minLength={isLogin ? 1 : 8} autoComplete={isLogin ? 'current-password' : 'new-password'} value={password} onChange={(e) => setPassword(e.target.value)} className={field} />
+            {!isLogin && <p className="mt-1 text-[11px] text-gray-500">At least 8 characters.</p>}
           </div>
 
-          <div>
-            <label className="block text-xs font-bold uppercase tracking-wider text-gray-400">Password</label>
-            <input
-              type="password"
-              required
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="mt-2 w-full rounded bg-[#1a1d21] p-2.5 text-sm text-gray-200 border border-transparent outline-none focus:border-indigo-500 transition"
-            />
-          </div>
-
-          <button
-            type="submit"
-            disabled={loading}
-            className="mt-2 w-full rounded bg-indigo-600 py-2.5 text-sm font-semibold text-white transition hover:bg-indigo-500 active:bg-indigo-700 disabled:opacity-50"
-          >
-            {loading ? 'Processing...' : isLogin ? 'Log In' : 'Continue'}
+          <button type="submit" disabled={loading} className="mt-2 w-full rounded bg-indigo-600 py-2.5 text-sm font-semibold text-white transition hover:bg-indigo-500 active:bg-indigo-700 disabled:opacity-50">
+            {loading ? 'Please wait…' : isLogin ? 'Log In' : 'Create account'}
           </button>
         </form>
 
-        <div className="mt-4 text-left">
-          <span className="text-xs text-gray-400">
-            {isLogin ? 'Need an account? ' : 'Already have an account? '}
-            <button
-              onClick={() => { setIsLogin(!isLogin); setError(''); }}
-              className="text-xs font-medium text-indigo-400 hover:underline inline ml-1 bg-transparent border-none p-0 cursor-pointer"
-            >
-              {isLogin ? 'Register' : 'Login'}
-            </button>
-          </span>
-        </div>
+        <p className="mt-4 text-left text-xs text-gray-400">
+          {isLogin ? 'Need an account?' : 'Already have an account?'}
+          <button type="button" onClick={() => { setIsLogin(!isLogin); setError(''); }} className="ml-1 border-none bg-transparent p-0 text-xs font-medium text-indigo-400 hover:underline">{isLogin ? 'Register' : 'Log in'}</button>
+        </p>
       </div>
     </div>
   );

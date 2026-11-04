@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { motion } from 'framer-motion';
 
 interface Particle {
@@ -13,10 +13,9 @@ interface Particle {
 }
 
 export default function BackgroundParticles() {
-  const [particles, setParticles] = useState<Particle[]>([]);
-
-  useEffect(() => {
-    const initialParticles = Array.from({ length: 20 }).map((_, i) => ({
+  // Randomised once per mount (lazy initialiser — no effect/setState round trip).
+  const [particles] = useState<Particle[]>(() =>
+    Array.from({ length: 20 }).map((_, i) => ({
       id: i,
       startX: Math.random() * 100,
       startY: Math.random() * 100,
@@ -25,9 +24,8 @@ export default function BackgroundParticles() {
       size: Math.random() * 3 + 2,
       duration: Math.random() * 20 + 20, 
       delay: Math.random() * -10,
-    }));
-    setParticles(initialParticles);
-  }, []);
+    })),
+  );
 
   return (
     // REMOVED bg-[#000000] so it doesn't block the image beneath it
