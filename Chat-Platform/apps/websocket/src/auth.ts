@@ -1,5 +1,5 @@
 import jwt from 'jsonwebtoken';
-import { getRedis } from '@repo/queue';
+import { getRedis, isSessionRevoked } from '@repo/queue';
 import { config } from './env.js';
 
 export interface AuthedUser {
@@ -12,9 +12,10 @@ export interface AuthedUser {
 export async function verifyToken(token: string | null | undefined): Promise<AuthedUser | null> {
   if (!token) return null;
   try {
-    const decoded = jwt.verify(token, config.JWT_SECRET) as { userId?: string; name?: string; email?: string };
+    const decoded = jwt.verify(token, config.JWT_SECRET) as { userId?: string; name?: string; email?: string; iat?: number };
     if (!decoded.userId) return null;
     if (await getRedis().exists(`blacklist:${token}`)) return null; // logged out
+    if (await isSessionRevoked(decoded.userId, decoded.iat)) return null; // password reset
     return { userId: decoded.userId, username: decoded.name ?? 'User', email: decoded.email ?? '' };
   } catch {
     return null;

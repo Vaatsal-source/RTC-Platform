@@ -27,6 +27,7 @@ export { Types } from 'mongoose';
 
 export * from './models/user.js';
 export * from './models/workspace.js';
+export * from './models/invite.js';
 export * from './models/channel.js';
 export * from './models/message.js';
 export * from './models/notification.js';

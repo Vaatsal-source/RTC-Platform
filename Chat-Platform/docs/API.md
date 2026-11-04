@@ -9,10 +9,15 @@ Message **writes** (send/edit/delete/react/receipts) happen over WebSocket — s
 ## Auth
 | | |
 |---|---|
-| `POST /auth/register` `{name,email,password≥8}` | → `{token,user}` |
-| `POST /auth/login` `{email,password}` | → `{token,user}` (rate-limited) |
-| `POST /auth/logout` | revokes the token |
-| `GET /auth/me` | → `{user}` |
+| `POST /auth/register` `{name,email,password≥8}` | → `{token,refreshToken,user}`; sends a verification email |
+| `POST /auth/login` `{email,password}` | → `{token,refreshToken,user}` (rate-limited: 30 / 15 min / IP) |
+| `POST /auth/refresh` `{refreshToken}` | single-use: returns a **new** pair. Access tokens last 1 h |
+| `POST /auth/logout` `{refreshToken?}` | revokes the access token (and the refresh token) |
+| `GET /auth/me` | → `{user}` (`emailVerified`) |
+| `POST /auth/forgot-password` `{email}` | always 200 (no account enumeration); emails a 1 h single-use link |
+| `POST /auth/reset-password` `{token,password≥8}` | signs out all other sessions (access + refresh tokens, WebSockets) |
+| `POST /auth/verify-email` `{token}` | marks the address verified and redeems pending invitations → `{user,joinedWorkspaces}` |
+| `POST /auth/resend-verification` | authenticated |
 
 ## Workspaces (roles: `admin`, `member`)
 | | |
@@ -23,7 +28,10 @@ Message **writes** (send/edit/delete/react/receipts) happen over WebSocket — s
 | `POST /workspaces/join` `{code}` | join by invite code |
 | `POST /workspaces/:id/invite-code` (admin) | rotate the invite code |
 | `GET /workspaces/:id/members` | members + role + `online` |
-| `POST /workspaces/:id/members` `{email \| userId}` (admin) | add an existing user; sends notification + email |
+| `POST /workspaces/:id/members` `{email \| userId}` (admin) | existing user → added now (201, notification + email). Unknown email → **202 `{pending:true}`**: invitation stored + emailed, redeemed when that address is verified |
+| `GET /workspaces/:id/invites` · `DELETE /workspaces/:id/invites/:inviteId` (admin) | pending email invitations |
+| `GET /workspaces/:id/audit?limit=` (admin) | audit trail for the workspace (who did what) |
+| `GET /workspaces/:id/analytics` (admin) | messages per day (7 d), active users, busiest channels, totals |
 | `PATCH /workspaces/:id/members/:userId` `{role}` (admin) | the owner's role is fixed |
 | `DELETE /workspaces/:id/members/:userId` | admin removes, or a member leaves |
 | `GET /workspaces/:id/activity?limit=` | activity feed (private-channel events hidden from non-members) |

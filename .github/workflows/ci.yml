@@ -46,6 +46,9 @@ jobs:
         options: >-
           --health-cmd "mongosh --quiet --eval 'db.adminCommand(\"ping\").ok'"
           --health-interval 5s --health-timeout 5s --health-retries 12
+      mailpit:
+        image: axllent/mailpit:latest # catches the worker's SMTP so verify/reset/invite emails are tested for real
+        ports: ['1025:1025', '8025:8025']
       redis:
         image: redis:7-alpine
         ports: ['6379:6379']
@@ -57,6 +60,9 @@ jobs:
       REDIS_URL: redis://127.0.0.1:6379
       JWT_SECRET: ci-only-secret-ci-only-secret-ci-only
       UPLOAD_DIR: /tmp/syncgrid-uploads
+      AUTH_RATE_LIMIT: '1000' # the e2e suite registers ~20 accounts from one IP
+      SMTP_HOST: localhost
+      SMTP_PORT: '1025'
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4

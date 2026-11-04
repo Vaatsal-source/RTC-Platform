@@ -1,10 +1,6 @@
-import { unlink } from 'node:fs/promises';
-import path from 'node:path';
 import { Channel, Message, StoredFile, type IChannel } from '@repo/database';
 import { invalidateChannelMembers } from '@repo/queue';
-import { config } from './env.js';
-
-export const uploadDir = (): string => path.resolve(config.UPLOAD_DIR);
+import { storage } from './storage.js';
 
 /** Removes the user from every private channel in the workspace. */
 export async function removeUserFromWorkspaceChannels(workspaceId: string, userId: string): Promise<void> {
@@ -22,6 +18,6 @@ export async function deleteChannelCascade(channel: IChannel): Promise<void> {
     StoredFile.deleteMany({ channelId: channel._id }),
     Channel.deleteOne({ _id: channel._id }),
   ]);
-  await Promise.all(files.map((f) => unlink(path.join(uploadDir(), f.storageName)).catch(() => undefined)));
+  await Promise.all(files.map((f) => storage.remove(f.storageName)));
   await invalidateChannelMembers(String(channel._id));
 }

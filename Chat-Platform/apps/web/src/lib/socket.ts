@@ -13,7 +13,7 @@ import type {
   ServerFrame,
   TypingUpdatePayload,
 } from '@repo/shared-types';
-import { WS_URL } from './api';
+import { WS_URL, ensureFreshToken } from './api';
 import { queryClient } from './queryClient';
 import { useAppStore } from '../store/useAppStore';
 
@@ -97,8 +97,18 @@ function open(): void {
     state().setConnected(false);
     if (intentionallyClosed) return;
     if (ev.code === 4401) {
-      // Server rejected our JWT: expired or revoked. Reconnecting would loop forever.
-      state().clearAuth();
+      // Server rejected our JWT (expired, or revoked by a password reset). Try to renew it once; if that
+      // fails the session is really over — reconnecting with the same token would loop forever.
+      void ensureFreshToken().then((fresh) => {
+        if (intentionallyClosed) return;
+        if (fresh) {
+          token = fresh;
+          state().setTokens(fresh);
+          open();
+        } else {
+          state().clearAuth();
+        }
+      });
       return;
     }
     // Backoff: 1s, 2s, 4s … capped at 15s, with jitter so a server restart doesn't get a thundering herd.

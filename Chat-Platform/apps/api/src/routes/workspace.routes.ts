@@ -2,6 +2,9 @@ import { Router } from 'express';
 import { randomBytes } from 'node:crypto';
 import {
   Activity,
+  AuditLog,
+  WorkspaceInvite,
+  isValidId,
   Channel,
   Message,
   StoredFile,
@@ -12,12 +15,13 @@ import {
   toChannelDTO,
   toWorkspaceDTO,
 } from '@repo/database';
-import type { WorkspaceMemberDTO } from '@repo/shared-types';
+import type { AnalyticsDTO, AuditEntryDTO, PendingInviteDTO, WorkspaceMemberDTO } from '@repo/shared-types';
 import {
   enqueueAudit,
   enqueueEmail,
   enqueueNotification,
   filterOnline,
+  getRedis,
   invalidateChannelMembers,
   invalidateWorkspaceChannels,
   publishBroadcast,
@@ -27,6 +31,7 @@ import { authed, requireAuth } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import {
   activityQuerySchema,
+  auditQuerySchema,
   createChannelSchema,
   createWorkspaceSchema,
   inviteMemberSchema,
@@ -38,27 +43,14 @@ import { requireAdmin, requireMember, requireWorkspace } from '../lib/access.js'
 import { badRequest, conflict, forbidden, notFound } from '../lib/errors.js';
 import { config } from '../lib/env.js';
 import { removeUserFromWorkspaceChannels } from '../lib/cascade.js';
+import { storage } from '../lib/storage.js';
+import { addMember, notifyMembershipChange } from '../lib/membership.js';
 import { param } from '../lib/params.js';
 
 const router: Router = Router();
 router.use(requireAuth);
 
 const newInviteCode = () => randomBytes(9).toString('base64url');
-
-/** Adds a user to a workspace and fires the side effects every join shares. */
-async function addMember(workspaceId: string, userId: string, userName: string, role: 'admin' | 'member') {
-  await WorkspaceMember.create({ workspaceId, userId, role });
-  await invalidateWorkspaceChannels(workspaceId);
-  void publishEvent({ type: 'user-joined', workspaceId, userId, userName, ts: Date.now() });
-  notifyMembershipChange(workspaceId, userId);
-}
-
-/** Tell the workspace (sidebars) and the affected user's sockets (re-scope subscriptions) that membership changed. */
-function notifyMembershipChange(workspaceId: string, userId: string) {
-  const payload = { channelId: '', workspaceId, change: 'members' as const };
-  void publishBroadcast({ kind: 'workspaces', workspaceIds: [workspaceId] }, 'CHANNEL_UPDATED', payload);
-  void publishBroadcast({ kind: 'user', userId }, 'CHANNEL_UPDATED', payload);
-}
 
 // ─── Create / list ────────────────────────────────────────────────────────────
 router.post('/', validate(createWorkspaceSchema), async (req, res) => {
@@ -143,6 +135,7 @@ router.delete('/:id', async (req, res) => {
 
   const channels = await Channel.find({ workspaceId: workspace._id }).select('_id').lean();
   const channelIds = channels.map((c) => c._id);
+  const files = await StoredFile.find({ channelId: { $in: channelIds } }).select('storageName').lean();
   await Promise.all([
     Message.deleteMany({ channelId: { $in: channelIds } }),
     StoredFile.deleteMany({ channelId: { $in: channelIds } }),
@@ -151,6 +144,7 @@ router.delete('/:id', async (req, res) => {
     Activity.deleteMany({ workspaceId: workspace._id }),
     Workspace.deleteOne({ _id: workspace._id }),
   ]);
+  await Promise.all(files.map((f) => storage.remove(f.storageName))); // the uploaded bytes, not just their records
   await invalidateChannelMembers(...channelIds.map(String));
   void enqueueAudit('workspace_deleted', user.userId, { workspaceId: param(req, 'id'), name: workspace.name });
   res.json({ success: true, message: 'Workspace deleted' });
@@ -175,14 +169,26 @@ router.get('/:id/members', async (req, res) => {
   res.json({ success: true, members });
 });
 
-// Module 2: invite members (by email or user id — they must already have an account)
+// Module 2: invite members by email (existing users are added at once; others get a pending invitation + email) or user id
 router.post('/:id/members', validate(inviteMemberSchema), async (req, res) => {
   const requester = authed(req);
   await requireAdmin(param(req, 'id'), requester.userId);
   const workspace = await requireWorkspace(param(req, 'id'));
 
   const target = req.body.userId ? await User.findById(req.body.userId) : await User.findOne({ email: req.body.email });
-  if (!target) throw notFound('No user with that email — share the invite link instead');
+  if (!target) {
+    // No account yet: remember the invitation (redeemed once that email is verified) and email them a sign-up link.
+    if (!req.body.email) throw notFound('User not found');
+    const email: string = req.body.email;
+    await WorkspaceInvite.updateOne({ workspaceId: param(req, 'id'), email }, { $setOnInsert: { invitedBy: requester.userId } }, { upsert: true });
+    await enqueueEmail('workspace_invite_signup', {
+      to: email,
+      subject: `${requester.name} invited you to ${workspace.name} on SyncGrid`,
+      body: `${requester.name} invited you to join the workspace "${workspace.name}".\n\nCreate an account with this email address and confirm it, and you will be added automatically:\n${config.APP_URL}/?invite=${workspace.inviteCode}\n\n(The link also lets you join directly once you are signed in.)`,
+    });
+    void enqueueAudit('workspace_invite_sent', requester.userId, { workspaceId: param(req, 'id'), email });
+    return void res.status(202).json({ success: true, pending: true, email });
+  }
   const targetId = String(target._id);
 
   if (await WorkspaceMember.exists({ workspaceId: param(req, 'id'), userId: targetId })) throw conflict('User is already a member');
@@ -314,6 +320,75 @@ router.get('/:id/activity', validate(activityQuerySchema, 'query'), async (req, 
     .limit(limit)
     .lean();
   res.json({ success: true, activity: items.map(toActivityDTO) });
+});
+
+// ─── Pending email invitations ───────────────────────────────────────────────
+router.get('/:id/invites', async (req, res) => {
+  await requireAdmin(param(req, 'id'), authed(req).userId);
+  const invites = await WorkspaceInvite.find({ workspaceId: param(req, 'id') }).sort({ createdAt: -1 }).lean();
+  const invites_: PendingInviteDTO[] = invites.map((i) => ({ id: String(i._id), email: i.email, invitedBy: String(i.invitedBy), createdAt: i.createdAt.toISOString() }));
+  res.json({ success: true, invites: invites_ });
+});
+
+router.delete('/:id/invites/:inviteId', async (req, res) => {
+  await requireAdmin(param(req, 'id'), authed(req).userId);
+  const r = await WorkspaceInvite.deleteOne({ _id: param(req, 'inviteId'), workspaceId: param(req, 'id') });
+  if (r.deletedCount === 0) throw notFound('Invitation not found');
+  res.json({ success: true });
+});
+
+// ─── Audit log (admins) ──────────────────────────────────────────────────────
+router.get('/:id/audit', validate(auditQuerySchema, 'query'), async (req, res) => {
+  await requireAdmin(param(req, 'id'), authed(req).userId);
+  const { limit } = req.query as unknown as { limit: number };
+  const rows = await AuditLog.find({ 'metadata.workspaceId': param(req, 'id') }).sort({ timestamp: -1 }).limit(limit).lean();
+  const users = await User.find({ _id: { $in: [...new Set(rows.map((r) => r.userId))].filter(isValidId) } }).select('name').lean();
+  const names = new Map(users.map((u) => [String(u._id), u.name]));
+  const entries: AuditEntryDTO[] = rows.map((r) => ({
+    id: String(r._id),
+    action: r.action,
+    user: { id: r.userId, name: names.get(r.userId) ?? 'Unknown' },
+    metadata: r.metadata ?? {},
+    createdAt: new Date(r.timestamp).toISOString(),
+  }));
+  res.json({ success: true, entries });
+});
+
+// ─── Analytics (admins): the Redis rollups the worker's analytics service writes ────────
+router.get('/:id/analytics', async (req, res) => {
+  const wid = param(req, 'id');
+  await requireAdmin(wid, authed(req).userId);
+
+  const dates = Array.from({ length: 7 }, (_, i) => new Date(Date.now() - (6 - i) * 86_400_000).toISOString().slice(0, 10));
+  const redis = getRedis();
+  const pipe = redis.pipeline();
+  for (const d of dates) pipe.hgetall(`analytics:ws:${wid}:messages:${d}`).scard(`analytics:ws:${wid}:posters:${d}`);
+  const out = (await pipe.exec()) ?? [];
+
+  const perChannel = new Map<string, number>();
+  const days: AnalyticsDTO['days'] = dates.map((date, i) => {
+    const counts = (out[i * 2]?.[1] ?? {}) as Record<string, string>;
+    let messages = 0;
+    for (const [channelId, n] of Object.entries(counts)) {
+      messages += Number(n);
+      perChannel.set(channelId, (perChannel.get(channelId) ?? 0) + Number(n));
+    }
+    return { date, messages, activeUsers: Number(out[i * 2 + 1]?.[1] ?? 0) };
+  });
+
+  const [channels, members] = await Promise.all([
+    Channel.find({ workspaceId: wid }).select('name').lean(),
+    WorkspaceMember.countDocuments({ workspaceId: wid }),
+  ]);
+  const names = new Map(channels.map((c) => [String(c._id), c.name]));
+  const topChannels = [...perChannel.entries()]
+    .filter(([id]) => names.has(id))
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([channelId, messages]) => ({ channelId, name: names.get(channelId)!, messages }));
+
+  const result: AnalyticsDTO = { days, topChannels, totals: { messages: days.reduce((n, d) => n + d.messages, 0), members, channels: channels.length } };
+  res.json({ success: true, ...result });
 });
 
 export default router;

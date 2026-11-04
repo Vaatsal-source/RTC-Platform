@@ -1,0 +1,28 @@
+# One public origin for the whole app.
+#   DOMAIN=chat.example.com  → Caddy gets and renews a free Let's Encrypt certificate automatically (needs ports 80/443 open + DNS)
+#   DOMAIN=:80               → plain HTTP; use behind Cloudflare Tunnel or any other TLS terminator
+{$DOMAIN} {
+	encode gzip
+
+	# REST API
+	handle /api/* {
+		reverse_proxy api:5000
+	}
+
+	# WebSocket — Caddy upgrades the connection transparently and does not time out idle sockets;
+	# the server's 30 s ping/pong keeps intermediaries happy too.
+	handle /ws {
+		reverse_proxy websocket:8080
+	}
+
+	# Everything else: the SPA
+	handle {
+		reverse_proxy frontend:80
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+	}
+}

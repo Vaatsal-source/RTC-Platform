@@ -19,4 +19,7 @@ const AuditLogSchema = new Schema<IAuditLog>(
   { timestamps: { createdAt: true, updatedAt: false } },
 );
 
+// Workspace admins read the audit trail by workspace (metadata.workspaceId), newest first.
+AuditLogSchema.index({ 'metadata.workspaceId': 1, timestamp: -1 });
+
 export const AuditLog = model<IAuditLog>('AuditLog', AuditLogSchema);

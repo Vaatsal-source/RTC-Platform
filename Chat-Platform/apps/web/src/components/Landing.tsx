@@ -67,7 +67,7 @@ export default function Landing({ onLaunch }: { onLaunch: () => void }) {
       <footer className="relative z-20 w-full border-t border-white/[0.06] bg-[#050505]">
         <div className="mx-auto flex max-w-7xl items-center justify-between px-8 py-8">
           <span className="text-[10px] font-bold uppercase tracking-widest text-gray-500">SyncGrid &bull; Real-Time Team Chat Platform</span>
-          <a href="https://github.com" target="_blank" rel="noreferrer" aria-label="GitHub" className="rounded-xl p-2 text-gray-400 transition hover:bg-white/5 hover:text-white"><GithubIcon /></a>
+          <a href="https://github.com/Vaatsal-source/RTC-Platform" target="_blank" rel="noreferrer" aria-label="GitHub" className="rounded-xl p-2 text-gray-400 transition hover:bg-white/5 hover:text-white"><GithubIcon /></a>
         </div>
       </footer>
     </div>

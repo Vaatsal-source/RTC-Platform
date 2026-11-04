@@ -12,6 +12,9 @@ import WebSocket from 'ws';
 const API = process.env.API_URL ?? 'http://localhost:5000/api';
 const WS1 = process.env.WS_URL ?? 'ws://localhost:8080';
 const WS2 = process.env.WS_URL_2 ?? 'ws://localhost:8082';
+// Optional: a Mailpit instance catching the worker's SMTP output (SMTP_HOST=localhost SMTP_PORT=1025 for the worker).
+// When reachable, the email-driven flows (verify, reset, invite-before-signup) are tested for real.
+const MAILPIT = process.env.MAILPIT_URL ?? 'http://localhost:8025';
 
 type Frame = { type: string; payload: any };
 let passed = 0;
@@ -38,6 +41,24 @@ async function http(method: string, path: string, token?: string, body?: unknown
   const ct = res.headers.get('content-type') ?? '';
   return { status: res.status, body: ct.includes('json') ? await res.json() : await res.text(), res };
 }
+
+/** Poll Mailpit for a message to `to` whose subject contains `subject`; returns its text body, or null. */
+async function waitForMail(to: string, subject: string, timeout = 12000): Promise<string | null> {
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
+    try {
+      const list: any = await (await fetch(`${MAILPIT}/api/v1/search?query=${encodeURIComponent(`to:${to}`)}`)).json();
+      const hit = (list.messages ?? []).find((m: any) => (m.Subject as string).includes(subject));
+      if (hit) return ((await (await fetch(`${MAILPIT}/api/v1/message/${hit.ID}`)).json()) as any).Text as string;
+    } catch {
+      /* mailpit not ready */
+    }
+    await sleep(300);
+  }
+  return null;
+}
+const mailpitUp = () => fetch(`${MAILPIT}/api/v1/info`).then((r) => r.ok).catch(() => false);
+const tokenFrom = (text: string | null, param: string) => text?.match(new RegExp(`[?&]${param}=([A-Za-z0-9_-]+)`))?.[1];
 
 class Client {
   frames: Frame[] = [];
@@ -354,6 +375,76 @@ async function main() {
   const snap = await D.waitFor('PRESENCE_SNAPSHOT');
   check('after joining a workspace, socket receives who is online', snap?.onlineUserIds?.includes(id.alice), snap);
   D.close();
+
+  section('Refresh tokens');
+  const erin = await http('POST', '/auth/register', undefined, mk('Erin'));
+  check('register returns an access + refresh token', !!erin.body.token && !!erin.body.refreshToken);
+  const r1 = await http('POST', '/auth/refresh', undefined, { refreshToken: erin.body.refreshToken });
+  check('refresh issues a new pair', r1.status === 200 && !!r1.body.token && r1.body.refreshToken !== erin.body.refreshToken);
+  check('refresh token is single-use (rotation)', (await http('POST', '/auth/refresh', undefined, { refreshToken: erin.body.refreshToken })).status === 401);
+  check('new access token works', (await http('GET', '/auth/me', r1.body.token)).status === 200);
+  check('garbage refresh token rejected', (await http('POST', '/auth/refresh', undefined, { refreshToken: 'x'.repeat(40) })).status === 401);
+  check('logout revokes the refresh token too', (await http('POST', '/auth/logout', r1.body.token, { refreshToken: r1.body.refreshToken })).status === 200 && (await http('POST', '/auth/refresh', undefined, { refreshToken: r1.body.refreshToken })).status === 401);
+
+  section('Audit log & analytics (admins)');
+  const audit = await http('GET', `/workspaces/${ws.id}/audit?limit=200`, tok.alice);
+  const actions = new Set((audit.body.entries ?? []).map((e: any) => e.action));
+  check('audit log records workspace, channel and message actions', ['channel_created', 'workspace_member_added', 'message_sent'].every((a) => actions.has(a)), [...actions]);
+  check('audit entries name the actor', audit.body.entries?.[0]?.user?.name === 'Alice' || audit.body.entries?.[0]?.user?.name === 'Bob');
+  check('members cannot read the audit log', (await http('GET', `/workspaces/${ws.id}/audit`, tok.bob)).status === 403);
+  let stats: any = {};
+  for (let i = 0; i < 25; i++) {
+    stats = (await http('GET', `/workspaces/${ws.id}/analytics`, tok.alice)).body;
+    if (stats.totals?.messages >= 55) break;
+    await sleep(200);
+  }
+  check('analytics counts the day\'s messages (worker rollups)', stats.totals?.messages >= 55, stats.totals);
+  check('analytics top channel is #general', stats.topChannels?.[0]?.name === 'general');
+  check('analytics reports members and 7 days', stats.totals?.members >= 3 && stats.days?.length === 7);
+  check('members cannot read analytics', (await http('GET', `/workspaces/${ws.id}/analytics`, tok.bob)).status === 403);
+
+  if (await mailpitUp()) {
+    section('Email: verification, password reset, invite-before-signup (real SMTP via Mailpit)');
+    const frank = mk('Frank');
+    const fr = await http('POST', '/auth/register', undefined, frank);
+    check('new accounts start unverified', fr.body.user?.emailVerified === false);
+    const vtoken = tokenFrom(await waitForMail(frank.email, 'Confirm your'), 'verify');
+    check('verification email delivered over SMTP', !!vtoken);
+    check('verify-email marks the account verified', (await http('POST', '/auth/verify-email', undefined, { token: vtoken })).body.user?.emailVerified === true);
+    check('verification link is single-use', (await http('POST', '/auth/verify-email', undefined, { token: vtoken })).status === 400);
+    check('/auth/me reflects verification', (await http('GET', '/auth/me', fr.body.token)).body.user?.emailVerified === true);
+
+    check('forgot-password answers 200 for an unknown email (no enumeration)', (await http('POST', '/auth/forgot-password', undefined, { email: `nobody${run}@test.dev` })).status === 200);
+    await http('POST', '/auth/forgot-password', undefined, { email: frank.email });
+    const rtoken = tokenFrom(await waitForMail(frank.email, 'Reset your'), 'reset');
+    check('reset email delivered over SMTP', !!rtoken);
+    check('weak new password rejected', (await http('POST', '/auth/reset-password', undefined, { token: rtoken, password: 'short' })).status === 400);
+    await sleep(1100); // access tokens carry second-resolution iat; make sure the old one predates the reset
+    check('reset-password succeeds', (await http('POST', '/auth/reset-password', undefined, { token: rtoken, password: 'brand-new-pass-1' })).status === 200);
+    check('reset link is single-use', (await http('POST', '/auth/reset-password', undefined, { token: rtoken, password: 'another-pass-22' })).status === 400);
+    check('old password no longer works', (await http('POST', '/auth/login', undefined, { email: frank.email, password: frank.password })).status === 401);
+    check('new password works', (await http('POST', '/auth/login', undefined, { email: frank.email, password: 'brand-new-pass-1' })).status === 200);
+    check('sessions from before the reset are signed out (access token)', (await http('GET', '/auth/me', fr.body.token)).status === 401);
+    check('...and their refresh token', (await http('POST', '/auth/refresh', undefined, { refreshToken: fr.body.refreshToken })).status === 401);
+    const stale = await Client.connect('stale', WS1, fr.body.token);
+    await sleep(400);
+    check('...and cannot open a WebSocket', stale.closeCode === 4401);
+
+    const gina = mk('Gina');
+    const inv = await http('POST', `/workspaces/${ws.id}/members`, tok.alice, { email: gina.email });
+    check('inviting an email with no account → 202 pending', inv.status === 202 && inv.body.pending === true);
+    check('invitation email delivered', !!(await waitForMail(gina.email, 'invited you')));
+    check('pending invitation is listed for admins', (await http('GET', `/workspaces/${ws.id}/invites`, tok.alice)).body.invites?.some((i: any) => i.email === gina.email));
+    const gr = await http('POST', '/auth/register', undefined, gina);
+    check('registering alone does not grant access (email unverified)', (await http('GET', '/workspaces', gr.body.token)).body.workspaces?.length === 0);
+    const gtoken = tokenFrom(await waitForMail(gina.email, 'Confirm your'), 'verify');
+    const gv = await http('POST', '/auth/verify-email', undefined, { token: gtoken });
+    check('verifying the address redeems the invitation', gv.body.joinedWorkspaces === 1);
+    check('Gina is now a workspace member', (await http('GET', '/workspaces', gr.body.token)).body.workspaces?.[0]?.id === ws.id);
+    check('the invitation is consumed', !(await http('GET', `/workspaces/${ws.id}/invites`, tok.alice)).body.invites?.some((i: any) => i.email === gina.email));
+  } else {
+    console.log(`\n  (Mailpit not reachable at ${MAILPIT} — skipping the email flows. Run it with SMTP_HOST=localhost SMTP_PORT=1025 on the worker.)`);
+  }
 
   section('Cleanup');
   check('owner deletes workspace', (await http('DELETE', `/workspaces/${ws.id}`, tok.alice)).status === 200);

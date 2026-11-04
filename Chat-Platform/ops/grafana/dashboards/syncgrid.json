@@ -37,7 +37,7 @@
       "id": 6, "type": "stat", "title": "API 5xx ratio (5m)",
       "gridPos": { "x": 16, "y": 5, "w": 8, "h": 7 },
       "fieldConfig": { "defaults": { "unit": "percentunit", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 0.05 }] } }, "overrides": [] },
-      "targets": [{ "expr": "sum(rate(api_http_request_duration_seconds_count{status=~\"5..\"}[5m])) / clamp_min(sum(rate(api_http_request_duration_seconds_count[5m])), 1)", "refId": "A" }]
+      "targets": [{ "expr": "(sum(rate(api_http_request_duration_seconds_count{status=~\"5..\"}[5m])) or vector(0)) / clamp_min(sum(rate(api_http_request_duration_seconds_count[5m])), 1)", "refId": "A" }]
     },
     {
       "id": 7, "type": "timeseries", "title": "Queue jobs by state",

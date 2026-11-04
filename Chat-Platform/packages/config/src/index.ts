@@ -20,12 +20,24 @@ const schema = z.object({
   REDIS_URL: z.string().default('redis://127.0.0.1:6379'),
 
   JWT_SECRET: z.string().default(DEV_JWT_SECRET),
-  JWT_EXPIRES_IN: z.string().default('7d'),
+  JWT_EXPIRES_IN: z.string().default('1h'), // short-lived access token; the refresh token renews it
+  REFRESH_TOKEN_DAYS: z.coerce.number().int().positive().default(30),
 
   API_PORT: port(5000),
+  // Number of reverse-proxy hops in front of the API (0 = none). Needed for correct client IPs / rate limiting.
+  // Credential endpoints (login/register/reset/verify): attempts per IP per 15 minutes.
+  AUTH_RATE_LIMIT: z.coerce.number().int().positive().default(30),
+  TRUST_PROXY: z.coerce.number().int().min(0).default(0),
   CORS_ORIGIN: z.string().default('http://localhost:5173'),
   APP_URL: z.string().default('http://localhost:5173'),
   UPLOAD_DIR: z.string().default('./uploads'),
+  // Optional S3-compatible object storage (AWS S3, Cloudflare R2, Backblaze B2, MinIO…). Empty bucket ⇒ local disk.
+  S3_BUCKET: z.string().optional().default(''),
+  S3_REGION: z.string().default('auto'),
+  S3_ENDPOINT: z.string().optional().default(''),
+  S3_ACCESS_KEY_ID: z.string().optional().default(''),
+  S3_SECRET_ACCESS_KEY: z.string().optional().default(''),
+  S3_FORCE_PATH_STYLE: z.enum(['true', 'false']).default('false'),
   MAX_UPLOAD_MB: z.coerce.number().positive().default(10),
 
   WS_PORT: port(8080),
