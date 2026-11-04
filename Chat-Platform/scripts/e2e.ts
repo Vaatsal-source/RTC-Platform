@@ -223,7 +223,15 @@ async function main() {
 
   section('History & infinite scroll');
   for (let i = 0; i < 55; i++) A.send('SEND_MESSAGE', { channelId: general.id, content: `bulk ${i}` });
-  await sleep(2500);
+  // Messages are written concurrently, so poll until all 55 are stored rather than sleeping a fixed time
+  // (a slow CI runner needs well over 2.5 s).
+  let stored = 0;
+  for (let i = 0; i < 150 && stored < 55; i++) {
+    const r = (await http('GET', `/channels/${general.id}/messages?limit=100`, tok.alice)).body;
+    stored = r.messages.filter((m: any) => m.content.startsWith('bulk ')).length;
+    if (stored < 55) await sleep(200);
+  }
+  check('all 55 bulk messages stored', stored === 55, stored);
   A.frames.length = 0;
   A.send('JOIN_CHANNEL', { channelId: general.id });
   const h2 = await A.waitFor('MESSAGE_HISTORY');
