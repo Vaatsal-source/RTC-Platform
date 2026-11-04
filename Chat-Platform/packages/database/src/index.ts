@@ -1,46 +1,38 @@
 import mongoose from 'mongoose';
 
-// ─── MongoDB Connection ────────────────────────────────────────────────────────
-// Single shared connection helper. Both the websocket app and the api app
-// will import `connectDB()` from this package so they don't duplicate
-// connection logic.
+// ─── MongoDB connection ───────────────────────────────────────────────────────
+// Single shared helper used by the api, websocket and worker apps.
 
-let isConnected = false;
+let connecting: Promise<void> | null = null;
 
-export async function connectDB(uri?: string): Promise<void> {
-  if (isConnected) {
-    console.log('[DB] Already connected, skipping');
-    return;
+export async function connectDB(uri: string = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/syncgrid'): Promise<void> {
+  if (mongoose.connection.readyState === 1) return;
+  if (!connecting) {
+    connecting = mongoose
+      .connect(uri, { serverSelectionTimeoutMS: 5000 })
+      .then(() => undefined)
+      .finally(() => {
+        connecting = null;
+      });
   }
-
-  const connectionString = uri || process.env.MONGO_URI || 'mongodb://localhost:27017/synccgrid';
-
-  try {
-    await mongoose.connect(connectionString, {
-      serverSelectionTimeoutMS: 5000, // fail fast instead of hanging indefinitely
-    });
-    isConnected = true;
-    console.log('[DB] Connected to MongoDB');
-  } catch (err) {
-    console.error('[DB] Connection failed:', err);
-    throw err;
-  }
-
-  const connection = mongoose.connection;
-  connection.on('disconnected', () => {
-    isConnected = false;
-    console.log('[DB] Disconnected from MongoDB');
-  });
+  await connecting;
 }
 
 export async function disconnectDB(): Promise<void> {
   await mongoose.disconnect();
-  isConnected = false;
 }
 
-// Re-export models so consuming apps only need one import path:
-// import { connectDB, Message, Channel } from 'database';
-export * from './models/message.js';
+export { mongoose };
+export { Types } from 'mongoose';
+
+export * from './models/user.js';
+export * from './models/workspace.js';
 export * from './models/channel.js';
+export * from './models/message.js';
 export * from './models/notification.js';
-export * from './models/auditLog.js';
+export * from './models/audit-log.js';
+export * from './models/file.js';
+export * from './models/activity.js';
+export * from './serializers.js';
+export * from './services/messages.js';
+export * from './services/access.js';

@@ -1,5 +1,5 @@
 {
-  "name": "web",
+  "name": "@repo/web",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -7,13 +7,17 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "typecheck": "tsc -b",
+    "test": "vitest run"
   },
   "dependencies": {
+    "@repo/shared-types": "workspace:*",
+    "@repo/ui": "workspace:*",
     "@tanstack/react-query": "^5.101.0",
     "axios": "^1.17.0",
-    "framer-motion": "^12.40.0",
     "emoji-picker-react": "^4.19.1",
+    "framer-motion": "^12.40.0",
     "lucide-react": "^1.17.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
@@ -36,6 +40,7 @@
     "tailwindcss": "^4.3.0",
     "typescript": "~6.0.2",
     "typescript-eslint": "^8.59.2",
-    "vite": "^8.0.16"
+    "vite": "^8.0.16",
+    "vitest": "^4.0.0"
   }
 }

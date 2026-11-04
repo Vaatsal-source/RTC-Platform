@@ -1,217 +1,260 @@
+import { createServer, type IncomingMessage } from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { WebSocketServer } from 'ws';
-import { connectDB } from 'database';
-import type { AuthenticatedWebSocket } from './types.js';
-import type { WSMessage } from './types.js';
-import { subscriber } from './redis.js';
+import { WS_BROADCAST_CHANNEL, type BroadcastEnvelope, type ChannelUpdatedPayload } from '@repo/shared-types';
+import { connectDB, disconnectDB, WorkspaceMember } from '@repo/database';
 import {
-  registerConnection,
-  removeConnection,
-  broadcastToAll,
-  getAllConnections,
-  getChannelSubscribers,
-} from './registry.js';
-import {
-  handleJoinChannel,
-  handleLeaveChannel,
-  handleSendMessage,
-  handleTypingStart,
-  handleTypingStop,
-  handleEditMessage,
-  handleDeleteMessage,
-  handleAddReaction,
-  handleRemoveReaction,
-  handleSendThreadReply,
-  handleMarkDelivered,
-  handleMarkRead,
-  handleJoinDM,
-  handleSendDM,
-  handleLoadMoreMessages,
-} from './handlers.js';
+  INSTANCE_ID,
+  addSocket,
+  closeQueues,
+  createEventSubscriber,
+  createRedis,
+  filterOnline,
+  getRedis,
+  publishEvent,
+  refreshPresence,
+  removeSocket,
+} from '@repo/queue';
+import { config, logger } from './env.js';
+import { verifyToken, type AuthedUser } from './auth.js';
+import type { Client } from './types.js';
+import { allSockets, deliver, dropChannel, registerConnection, removeConnection, resolveLocalTargets, send, socketsOf, stats, subscribe, unsubscribe } from './registry.js';
+import { handleRawMessage } from './handlers/index.js';
+import { refreshScope } from './handlers/channels.js';
+import { clearTypingFor } from './handlers/typing.js';
+import { broadcastCounter, connectionsGauge, registry as metricsRegistry, rejectedCounter } from './metrics.js';
 
-const PORT = Number(process.env.WS_PORT) || 8080;
-const JWT_SECRET = process.env.JWT_SECRET || 'dev_secret';
+const HEARTBEAT_INTERVAL_MS = 30_000;
+const MAX_PAYLOAD_BYTES = 64 * 1024;
+const allowedOrigins = config.CORS_ORIGIN.split(',').map((s) => s.trim());
 
-function verifyToken(token: string): { userId: string; username: string } | null {
-  if (token === 'mock_jwt_token_payload') {
-    return { userId: 'mock_user_001', username: 'Vaatsalya' };
+// ─── HTTP (health + metrics) and the WS upgrade ──────────────────────────────
+const server = createServer(async (req, res) => {
+  if (req.url === '/health') {
+    res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ status: 'ok', instance: INSTANCE_ID, ...stats() }));
+  } else if (req.url === '/metrics') {
+    res.writeHead(200, { 'Content-Type': metricsRegistry.contentType }).end(await metricsRegistry.metrics());
+  } else {
+    res.writeHead(404).end();
   }
-  if (token.startsWith('test_')) {
-    const username = token.slice(5) || 'Anonymous';
-    return { userId: `test_${username.toLowerCase()}`, username };
-  }
-  return null;
-}
-
-let wss: WebSocketServer;
-
-async function startServer() {
-  try {
-    await connectDB(process.env.MONGO_URI);
-  } catch (err) {
-    console.error('[WS Server] Failed to connect to MongoDB. Exiting.');
-    process.exit(1);
-  }
-
-  wss = new WebSocketServer({ port: PORT });
-  console.log(`[WS Server] Listening on ws://localhost:${PORT}`);
-
-  setupRedisSubscriber();
-  attachConnectionHandler();
-  startHeartbeat();
-}
-
-function setupRedisSubscriber() {
-  subscriber.subscribe('ws:broadcast', (err) => {
-    if (err) {
-      console.error('[Redis] Failed to subscribe:', err);
-      return;
-    }
-    console.log('[Redis] Subscribed to ws:broadcast channel');
-  });
-
-  subscriber.on('message', (_channel, data) => {
-    const envelope = JSON.parse(data);
-    const { target, message, excludeUserId, channelId } = envelope;
-    const connections = getAllConnections();
-    const channelSubscribers = getChannelSubscribers();
-
-    if (target === 'channel') {
-      const subscribers = channelSubscribers.get(channelId);
-      if (!subscribers) return;
-      for (const client of subscribers) {
-        if (client.userId === excludeUserId) continue;
-        if (client.readyState === 1) {
-          client.send(message);
-        }
-      }
-    } else if (target === 'all') {
-      for (const [, client] of connections) {
-        if (client.userId === excludeUserId) continue;
-        if (client.readyState === 1) {
-          client.send(message);
-        }
-      }
-    }
-  });
-}
-
-function attachConnectionHandler() {
-  wss.on('connection', (rawWs, request) => {
-    const url = new URL(request.url || '', `ws://localhost:${PORT}`);
-    const token = url.searchParams.get('token');
-
-    if (!token) {
-      rawWs.send(JSON.stringify({ type: 'ERROR', payload: { message: 'No token provided' } }));
-      rawWs.close(1008, 'Unauthorized');
-      return;
-    }
-
-    const user = verifyToken(token);
-
-    if (!user) {
-      rawWs.send(JSON.stringify({ type: 'ERROR', payload: { message: 'Invalid token' } }));
-      rawWs.close(1008, 'Unauthorized');
-      return;
-    }
-
-    const ws = rawWs as AuthenticatedWebSocket;
-    ws.userId = user.userId;
-    ws.username = user.username;
-    ws.isAlive = true;
-
-    registerConnection(ws);
-
-    broadcastToAll(
-      JSON.stringify({
-        type: 'PRESENCE_UPDATE',
-        payload: { userId: ws.userId, username: ws.username, status: 'online' },
-      }),
-      ws
-    );
-
-    ws.send(JSON.stringify({
-      type: 'CONNECTED',
-      payload: { message: 'Connected to SyncGrid WS', userId: ws.userId, username: ws.username },
-    }));
-
-    ws.on('message', (raw) => {
-      let parsed: WSMessage;
-      try {
-        parsed = JSON.parse(raw.toString());
-      } catch {
-        ws.send(JSON.stringify({ type: 'ERROR', payload: { message: 'Invalid JSON' } }));
-        return;
-      }
-
-      const { type, payload } = parsed;
-      console.log(`[WS] <- ${ws.username}: ${type}`);
-
-      switch (type) {
-        case 'JOIN_CHANNEL': handleJoinChannel(ws, payload as any); break;
-        case 'LEAVE_CHANNEL': handleLeaveChannel(ws, payload as any); break;
-        case 'SEND_MESSAGE': handleSendMessage(ws, payload as any); break;
-        case 'TYPING_START': handleTypingStart(ws, payload as any); break;
-        case 'TYPING_STOP': handleTypingStop(ws, payload as any); break;
-        case 'EDIT_MESSAGE': handleEditMessage(ws, payload as any); break;
-        case 'DELETE_MESSAGE': handleDeleteMessage(ws, payload as any); break;
-        case 'ADD_REACTION': handleAddReaction(ws, payload as any); break;
-        case 'REMOVE_REACTION': handleRemoveReaction(ws, payload as any); break;
-        case 'SEND_THREAD_REPLY': handleSendThreadReply(ws, payload as any); break;
-        case 'MARK_DELIVERED': handleMarkDelivered(ws, payload as any); break;
-        case 'MARK_READ': handleMarkRead(ws, payload as any); break;
-        case 'JOIN_DM': handleJoinDM(ws, payload as any); break;
-        case 'SEND_DM': handleSendDM(ws, payload as any); break;
-        case 'LOAD_MORE_MESSAGES': handleLoadMoreMessages(ws, payload as any); break;
-        default:
-          ws.send(JSON.stringify({
-            type: 'ERROR',
-            payload: { message: `Unknown message type: ${type}` },
-          }));
-      }
-    });
-
-    ws.on('close', () => {
-      removeConnection(ws);
-      broadcastToAll(
-        JSON.stringify({
-          type: 'PRESENCE_UPDATE',
-          payload: { userId: ws.userId, username: ws.username, status: 'offline' },
-        })
-      );
-    });
-
-    ws.on('pong', () => { ws.isAlive = true; });
-    ws.on('error', (err) => { console.error(`[WS Error] ${ws.username}:`, err.message); });
-  });
-}
-
-const HEARTBEAT_INTERVAL = 30_000;
-let heartbeat: ReturnType<typeof setInterval>;
-
-function startHeartbeat() {
-  heartbeat = setInterval(() => {
-    const connections = getAllConnections();
-    connections.forEach((ws) => {
-      if (!ws.isAlive) {
-        console.log(`[Heartbeat] Terminating dead connection: ${ws.username}`);
-        ws.terminate();
-        return;
-      }
-      ws.isAlive = false;
-      ws.ping();
-    });
-  }, HEARTBEAT_INTERVAL);
-
-  wss.on('close', () => {
-    clearInterval(heartbeat);
-    console.log('[WS Server] Shutting down');
-  });
-}
-
-process.on('SIGINT', () => {
-  console.log('[WS Server] Received SIGINT, closing...');
-  wss.close();
-  process.exit(0);
 });
 
-startServer();
+const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_PAYLOAD_BYTES });
+
+/**
+ * Connection lifecycle:  Connect → JWT verify → Register → Subscribe to channels → Ready
+ * The JWT is checked during the HTTP upgrade, before a socket exists.
+ */
+server.on('upgrade', async (req: IncomingMessage, socket, head) => {
+  const origin = req.headers.origin;
+  if (origin && !allowedOrigins.includes(origin)) {
+    rejectedCounter.inc({ reason: 'origin' });
+    socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+    return void socket.destroy();
+  }
+
+  let user: AuthedUser | null = null;
+  try {
+    user = await verifyToken(new URL(req.url ?? '/', 'http://localhost').searchParams.get('token'));
+  } catch {
+    user = null;
+  }
+
+  wss.handleUpgrade(req, socket, head, (ws) => {
+    if (!user) {
+      // Accept-then-close with an app-specific code so the browser can tell "bad token" (4401) from a network drop.
+      rejectedCounter.inc({ reason: 'auth' });
+      ws.close(4401, 'Unauthorized');
+      return;
+    }
+    void onConnection(ws as Client, user);
+  });
+});
+
+async function onConnection(ws: Client, user: AuthedUser): Promise<void> {
+  ws.socketId = randomUUID();
+  ws.userId = user.userId;
+  ws.username = user.username;
+  ws.isAlive = true;
+  ws.workspaceIds = new Set();
+  ws.channels = new Set();
+  ws.tokens = 40;
+  ws.tokensRefilledAt = Date.now();
+
+  // Messages can arrive while we're still loading scope; chain them behind `ready` to keep them ordered.
+  let ready: Promise<void> = Promise.resolve();
+  ws.on('message', (raw) => {
+    const text = raw.toString();
+    ready = ready.then(() => handleRawMessage(ws, text));
+  });
+  ws.on('pong', () => {
+    ws.isAlive = true;
+  });
+  ws.on('error', (err) => logger.warn('socket error', { user: ws.username, err: err.message }));
+  ws.on('close', () => void onClose(ws));
+
+  ready = (async () => {
+    try {
+      await refreshScope(ws); // Subscribe to channels
+      registerConnection(ws); // Register
+      connectionsGauge.inc();
+
+      const firstSocket = await addSocket(ws.userId, `${INSTANCE_ID}:${ws.socketId}`);
+      if (firstSocket) announcePresence(ws, 'online');
+
+      send(ws, 'CONNECTED', {
+        userId: ws.userId,
+        username: ws.username,
+        message: 'Connected to SyncGrid',
+        onlineUserIds: await onlinePeers(ws),
+      });
+      logger.info('connected', { user: ws.username, workspaces: ws.workspaceIds.size, channels: ws.channels.size });
+    } catch (err) {
+      logger.error('connection setup failed', { err: (err as Error).message });
+      ws.close(1011, 'Setup failed');
+    }
+  })();
+}
+
+/** Users sharing a workspace with this socket's user who are currently online (anywhere). */
+async function onlinePeers(ws: Client): Promise<string[]> {
+  const ids = await WorkspaceMember.find({ workspaceId: { $in: [...ws.workspaceIds] } }).distinct('userId');
+  return filterOnline([...new Set(ids.map(String))].filter((id) => id !== ws.userId));
+}
+
+async function onClose(ws: Client): Promise<void> {
+  clearTypingFor(ws);
+  const registered = [...socketsOf(ws.userId)].includes(ws);
+  removeConnection(ws);
+  if (!registered) return; // never finished setup
+  connectionsGauge.dec();
+  try {
+    const wasLast = await removeSocket(ws.userId, `${INSTANCE_ID}:${ws.socketId}`);
+    if (wasLast) announcePresence(ws, 'offline');
+  } catch (err) {
+    logger.error('presence cleanup failed', { err: (err as Error).message });
+  }
+}
+
+/** Presence is an event on the bus; every WS instance turns it into PRESENCE_UPDATE frames for its own sockets. */
+function announcePresence(ws: Client, status: 'online' | 'offline'): void {
+  void publishEvent({ type: 'presence-updated', userId: ws.userId, username: ws.username, status, workspaceIds: [...ws.workspaceIds], ts: Date.now() });
+}
+
+// ─── Redis → local sockets ───────────────────────────────────────────────────
+// This is the horizontal-scaling backplane: whichever instance a user is on,
+// every broadcast reaches them because all instances listen on the same channels.
+const broadcastSub = createRedis({ name: 'ws-broadcast', subscriber: true });
+const events = createEventSubscriber('ws');
+
+function setupRedis(): Promise<unknown> {
+  broadcastSub.on('message', (_channel, raw) => {
+    let env: BroadcastEnvelope;
+    try {
+      env = JSON.parse(raw);
+    } catch {
+      return;
+    }
+    const targets = deliver(env);
+    broadcastCounter.inc(targets.length);
+    if (env.frame.includes('"CHANNEL_UPDATED"')) void applyChannelUpdate(env);
+  });
+
+  events.on('presence-updated', (e) => {
+    const targets = resolveLocalTargets({ origin: '', target: { kind: 'workspaces', workspaceIds: e.workspaceIds }, frame: '', excludeUserId: e.userId });
+    for (const ws of targets) send(ws, 'PRESENCE_UPDATE', { userId: e.userId, username: e.username, status: e.status });
+  });
+
+  events.on('notification-created', (e) => {
+    for (const ws of socketsOf(e.userId)) {
+      send(ws, 'NOTIFICATION', {
+        id: e.notificationId,
+        kind: e.kind,
+        message: e.message,
+        channelId: e.channelId,
+        workspaceId: e.workspaceId,
+        senderId: e.senderId,
+        senderName: e.senderName,
+        read: false,
+        createdAt: e.createdAt,
+      });
+    }
+  });
+
+  return Promise.all([broadcastSub.subscribe(WS_BROADCAST_CHANNEL), events.start()]);
+}
+
+/** Keep subscriptions in step with channel/membership changes announced by the API. */
+async function applyChannelUpdate(env: BroadcastEnvelope): Promise<void> {
+  const { payload } = JSON.parse(env.frame) as { payload: ChannelUpdatedPayload };
+  const targets = resolveLocalTargets(env);
+  const { target } = env;
+
+  try {
+    if (payload.change === 'members' && target.kind === 'user') {
+      // Joined/left a workspace → recompute subscriptions, then resync who is online (the earlier snapshot is stale).
+      await Promise.all(
+        targets.map(async (ws) => {
+          await refreshScope(ws);
+          send(ws, 'PRESENCE_SNAPSHOT', { onlineUserIds: await onlinePeers(ws) });
+        }),
+      );
+    } else if (payload.change === 'created' && payload.channelId) {
+      if (target.kind === 'user') await Promise.all(targets.map(refreshScope)); // new private channel / DM
+      else for (const ws of targets) subscribe(ws, payload.channelId); // new public channel in their workspace
+    } else if (payload.change === 'deleted' && payload.channelId) {
+      if (target.kind === 'user') for (const ws of targets) unsubscribe(ws, payload.channelId); // removed from a private channel
+      else dropChannel(payload.channelId); // channel gone for everyone
+    }
+  } catch (err) {
+    logger.error('failed to apply channel update', { err: (err as Error).message });
+  }
+}
+
+// ─── Heartbeat: Ping → Pong → Alive ──────────────────────────────────────────
+const heartbeat = setInterval(() => {
+  const alive = new Set<string>();
+  for (const ws of allSockets()) {
+    if (!ws.isAlive) {
+      logger.info('terminating dead connection', { user: ws.username });
+      ws.terminate();
+      continue;
+    }
+    alive.add(ws.userId);
+    ws.isAlive = false;
+    ws.ping();
+  }
+  // Presence keys carry a TTL; refreshing them proves *this instance* is still alive.
+  void refreshPresence([...alive]).catch((err) => logger.warn('presence refresh failed', { err: err.message }));
+}, HEARTBEAT_INTERVAL_MS);
+
+// ─── Boot / shutdown ─────────────────────────────────────────────────────────
+async function main() {
+  await connectDB(config.MONGO_URI);
+  await setupRedis();
+  server.listen(config.WS_PORT, () => logger.info(`WebSocket server (instance ${INSTANCE_ID}) listening on :${config.WS_PORT}`));
+}
+
+let shuttingDown = false;
+async function shutdown(signal: string) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  logger.info(`${signal} received, closing`);
+  clearInterval(heartbeat);
+  server.close();
+  for (const ws of allSockets()) ws.close(1001, 'Server restarting'); // clients auto-reconnect to another instance
+  await new Promise((r) => setTimeout(r, 500)); // let close handlers clear presence
+  await events.close();
+  broadcastSub.disconnect();
+  await closeQueues();
+  await disconnectDB();
+  getRedis().disconnect();
+  process.exit(0);
+}
+process.on('SIGTERM', () => void shutdown('SIGTERM'));
+process.on('SIGINT', () => void shutdown('SIGINT'));
+
+main().catch((err) => {
+  logger.error('Failed to start WebSocket server', { err: err?.stack ?? err });
+  process.exit(1);
+});

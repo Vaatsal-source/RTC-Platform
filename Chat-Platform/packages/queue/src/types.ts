@@ -1,27 +1,31 @@
-// ─── Notification Job ────────────────────────────
+import type { NotificationKind } from '@repo/shared-types';
 
 export interface NotificationJobData {
-  userId: string;        // who receives the notification
-  message: string;       // notification text
-  type: 'mention' | 'message' | 'invite';  // what kind
-  channelId?: string;    // optional - which channel
-  senderId?: string;     // optional - who triggered it
+  userId: string; // recipient
+  message: string;
+  type: NotificationKind;
+  channelId?: string;
+  workspaceId?: string;
+  senderId?: string;
+  senderName?: string;
 }
-
-// ─── Audit Job ───────────────────────────────────
 
 export interface AuditJobData {
-  userId: string;        // who did the action
-  action: string;        // what they did
-  metadata?: Record<string, unknown>;  // any extra info
-  timestamp?: number;    // when it happened
+  userId: string;
+  action: string;
+  metadata?: Record<string, unknown>;
+  timestamp?: number;
 }
-
-// ─── Email Job ───────────────────────────────────
 
 export interface EmailJobData {
-  to: string;            // recipient email
-  subject: string;       // email subject
-  body: string;          // email content
-  userId?: string;       // optional - which user
+  to: string;
+  subject: string;
+  body: string;
+  userId?: string;
 }
+
+export const QUEUE_NAMES = {
+  notifications: 'notifications',
+  audit: 'audit',
+  email: 'email',
+} as const;

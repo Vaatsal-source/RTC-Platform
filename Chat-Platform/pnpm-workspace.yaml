@@ -4,3 +4,6 @@ packages:
 allowBuilds:
   esbuild: true
   msgpackr-extract: false
+# One ioredis for everyone: BullMQ must share our version or its Connection types diverge.
+overrides:
+  ioredis: 5.11.1
