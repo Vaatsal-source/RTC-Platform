@@ -92,40 +92,38 @@ jobs:
         if: failure()
         run: tail -n 80 .logs/*.log
 
+  # Only on merges to main (not on every PR): builds all four images once, and pushes them to GHCR
+  # when the repository variable PUSH_IMAGES is 'true'.
   docker:
     name: Docker images
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     needs: [verify, e2e]
     permissions:
       contents: read
       packages: write
-    strategy:
-      matrix:
-        include:
-          - { name: api, file: Dockerfile, entry: src/server.ts }
-          - { name: websocket, file: Dockerfile, entry: src/index.ts }
-          - { name: worker, file: Dockerfile, entry: src/index.ts }
-          - { name: web, file: apps/web/Dockerfile, entry: '' }
+    env:
+      PUSH: ${{ vars.PUSH_IMAGES == 'true' }}
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      # Deploy step: set the repository variable PUSH_IMAGES=true to publish to GHCR on merges to main.
       - name: Log in to GHCR
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.PUSH_IMAGES == 'true'
+        if: env.PUSH == 'true'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v6
-        with:
-          context: Chat-Platform
-          file: Chat-Platform/${{ matrix.file }}
-          target: ${{ matrix.name != 'web' && 'service' || '' }}
-          build-args: |
-            APP=${{ matrix.name }}
-            ENTRY=${{ matrix.entry }}
-          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.PUSH_IMAGES == 'true' }}
-          tags: ghcr.io/${{ github.repository }}/syncgrid-${{ matrix.name }}:latest,ghcr.io/${{ github.repository }}/syncgrid-${{ matrix.name }}:${{ github.sha }}
-          cache-from: type=gha,scope=${{ matrix.name }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+      - name: Build (and optionally push) images
+        working-directory: Chat-Platform
+        run: |
+          repo="ghcr.io/$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')" # image names must be lowercase
+          build() { # name file entry
+            docker build -f "$2" --target "${4:-service}" --build-arg APP="$1" --build-arg ENTRY="$3" -t "$repo/syncgrid-$1:latest" -t "$repo/syncgrid-$1:${{ github.sha }}" .
+          }
+          build api Dockerfile src/server.ts
+          build websocket Dockerfile src/index.ts
+          build worker Dockerfile src/index.ts
+          docker build -f apps/web/Dockerfile -t "$repo/syncgrid-web:latest" -t "$repo/syncgrid-web:${{ github.sha }}" .
+          if [ "$PUSH" = "true" ]; then
+            for n in api websocket worker web; do docker push --all-tags "$repo/syncgrid-$n"; done
+          fi
