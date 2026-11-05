@@ -11,24 +11,18 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-defaults:
-  run:
-    working-directory: Chat-Platform # the monorepo lives in a sub-folder of this git repo
-
 jobs:
   verify:
     name: Lint · Typecheck · Test · Build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with:
-          package_json_file: Chat-Platform/package.json # pins pnpm via "packageManager"
+      - uses: pnpm/action-setup@v4 # pnpm version comes from "packageManager" in package.json
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
-          cache-dependency-path: Chat-Platform/pnpm-lock.yaml
+          cache-dependency-path: pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm typecheck
@@ -65,14 +59,12 @@ jobs:
       SMTP_PORT: '1025'
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with:
-          package_json_file: Chat-Platform/package.json
+      - uses: pnpm/action-setup@v4 # pnpm version comes from "packageManager" in package.json
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
-          cache-dependency-path: Chat-Platform/pnpm-lock.yaml
+          cache-dependency-path: pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - name: Start services
         run: |
@@ -120,7 +112,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build (and optionally push) images
-        working-directory: Chat-Platform
         run: |
           repo="ghcr.io/$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')" # image names must be lowercase
           build() { # name file entry

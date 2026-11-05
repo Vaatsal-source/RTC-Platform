@@ -18,7 +18,6 @@ Everything is driven by [`docker-compose.yml`](../docker-compose.yml) profiles:
 ## 0. Configure `.env`
 
 ```bash
-cd Chat-Platform
 cp .env.example .env
 # generate hex secrets (safe inside connection URLs):
 openssl rand -hex 32   # JWT_SECRET
@@ -122,13 +121,13 @@ Add instances (`--profile scale` shows the pattern: another `websocket` service 
 ## Verify the deployment
 
 ```bash
-cd Chat-Platform
 API_URL=https://chat.example.com/api WS_URL=wss://chat.example.com/ws pnpm e2e
 ```
 Notes: the suite registers ~20 throw-away accounts, and production mode rate-limits credential endpoints (`AUTH_RATE_LIMIT`, default 30 per 15 min per IP), so run it **once** per window, against a staging copy, or temporarily raise `AUTH_RATE_LIMIT`. The email flows run only if a Mailpit instance is reachable (`MAILPIT_URL`); otherwise they're skipped.
 Then do a manual two-device chat over HTTPS and send one real email through your SMTP provider.
 
-## What was verified, and what wasn't
+## Testing status
 
-Tested locally in Docker: the hardened stack (passworded MongoDB/Redis, localhost-bound ports) behind Caddy on one origin (`DOMAIN=:80`) — 134-check e2e, both browser suites, real SMTP via Mailpit, S3 storage against an S3-compatible server, backup **and restore**, Prometheus scraping, every Grafana panel query returning data, Alertmanager discovered by Prometheus and routing a test alert to the Discord receiver.
-**Not** tested (needs your accounts/domain): Let's Encrypt issuance, Cloudflare Tunnel, an Oracle/GCP VM, delivery to a real Discord channel, a real SMTP provider, Cloudflare R2/B2.
+The following have been exercised locally in Docker: the hardened stack (password-protected MongoDB and Redis, ports bound to localhost) behind Caddy on a single origin (`DOMAIN=:80`), the end-to-end suite and browser tests against it, SMTP delivery through Mailpit, S3 storage against an S3-compatible server, MongoDB backup and restore, Prometheus scraping and every Grafana panel query, and Alertmanager routing a test alert to the Discord receiver.
+
+The following depend on external accounts or infrastructure and have not been exercised: Let's Encrypt certificate issuance, Cloudflare Tunnel, a cloud VM, delivery to a live Discord channel, a production SMTP provider, and Cloudflare R2 or Backblaze B2.
