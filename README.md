@@ -27,17 +27,18 @@ Everything the user asked for in the spec is implemented — see [Feature checkl
 
 Prerequisites: **Node ≥ 22**, **pnpm 11**, **Docker Desktop**.
 
-### A) Develop on the host (hot reload)
+### A) Run it on your machine (hot reload)
 
 ```bash
 cd Chat-Platform
-pnpm install
-cp .env.example .env          # defaults work for local dev
-pnpm infra:up                 # MongoDB + Redis (+ Redis Commander :8081) in Docker
-pnpm dev                      # api :5000 · websocket :8080 · worker · web :5173
+pnpm install                  # first time only
+cp .env.example .env          # first time only; the defaults work locally
+pnpm local                    # starts MongoDB + Redis + Mailpit in Docker, waits until they're ready, then api · websocket · worker · web
 ```
 
-Open <http://localhost:5173>, register two users in two browsers, and chat.
+Open <http://localhost:5173>, register two users in two browsers (or one normal + one private window) and chat.
+Every email the app sends (verification, password reset, invitations, offline mentions) lands in the local inbox at <http://localhost:8025> — set `SMTP_HOST=localhost` and `SMTP_PORT=1025` in `.env` to enable it.
+Stop with Ctrl+C, then `pnpm infra:down`. (`pnpm infra:up` + `pnpm dev` are the same thing as `pnpm local`, in two steps.)
 
 ### B) Run the whole stack in Docker
 

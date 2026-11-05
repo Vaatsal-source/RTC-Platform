@@ -11,9 +11,10 @@
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
     "format": "prettier --write \"**/*.{ts,tsx,json,md,yml}\"",
-    "infra:up": "docker compose -f docker-compose.dev.yml up -d",
+    "infra:up": "docker compose -f docker-compose.dev.yml up -d --wait",
     "infra:down": "docker compose -f docker-compose.dev.yml down",
-    "e2e": "tsx scripts/e2e.ts"
+    "e2e": "tsx scripts/e2e.ts",
+    "local": "pnpm infra:up && pnpm dev"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
