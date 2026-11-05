@@ -18,7 +18,7 @@ coverage/
 # Runtime artefacts
 uploads/
 backups/
-Chat-Platform/ops/alertmanager/discord_webhook_url
+ops/alertmanager/discord_webhook_url
 .logs/
 *.log
 pnpm-debug.log*
